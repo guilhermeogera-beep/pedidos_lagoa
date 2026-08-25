@@ -1,0 +1,35 @@
+{
+  "name": "Pedidos Lagoa",
+  "short_name": "Pedidos",
+  "description": "Pedidos dos quiosques direto na recepção.",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen"],
+  "orientation": "any",
+  "background_color": "#F3F5F4",
+  "theme_color": "#0E5C63",
+  "categories": ["business", "food", "productivity"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Pedidos da recepção",
+      "short_name": "Pedidos",
+      "url": "./#/pedidos",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Cardápio do quiosque",
+      "short_name": "Cardápio",
+      "url": "./#/cardapio",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
