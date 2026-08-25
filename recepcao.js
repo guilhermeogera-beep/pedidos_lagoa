@@ -1,42 +1,42 @@
 /* ============================================================
    PEDIDOS LAGOA — RECEPÇÃO
    ============================================================
-   Este arquivo desenha as DUAS telas de quem fica no balcão:
+   As DUAS telas de quem fica no balcão:
 
-     "Pedidos"   → o quadro ao vivo. É o coração do sistema: o que
-                   o quiosque pediu aparece aqui na hora, com som,
-                   e a recepção empurra o cartão de coluna em coluna
-                   até entregar.
-     "Histórico" → a tabela do dia inteiro, com resumo e exportação
-                   para o Excel (fechamento de caixa).
+     "Pedidos"   → o quadro ao vivo. É o coração do sistema.
+     "Histórico" → a tabela do dia, com resumo e CSV (fechar caixa).
 
-   Nada aqui conversa com o banco direto: tudo passa pelo núcleo
-   (PL.backend). Assim o modo demonstração e o modo nuvem se
-   comportam igualzinho, e esta tela não precisa saber a diferença.
+   O QUE MUDOU AO ENTRAR A COZINHA: o quadro não mostra mais
+   "pedidos", e sim PARTES de pedido. Um pedido de porção + isca
+   vira dois cartões:
 
-   Os nomes vindos do banco ficam em inglês de propósito
-   (created_at, daily_number, total_cents...) — é o mesmo nome que
-   está na tabela do Supabase, então não existem dois nomes para a
-   mesma coisa na hora de procurar um problema.
+     · a parte da COZINHA anda: recebido → cozinha → pronto → entregue
+       (quem aperta "pronto" é a cozinha, não a recepção)
+     · a parte do BALCÃO anda:  recebido → pronto → entregue
+       (a recepção separa e já leva; não passa pela cozinha)
+
+   Os dois cartões dizem "#12", com etiqueta de destino e um aviso
+   de que existe outra metade — senão pareceria pedido duplicado.
+
+   Nada aqui conversa com o banco direto: tudo passa por PL.backend.
+   Assim o modo demonstração e o modo nuvem se comportam igual.
+
+   Nomes vindos do banco ficam em inglês (created_at, daily_number,
+   total_cents...) — é o mesmo nome que está na tabela do Supabase.
    ============================================================ */
 (function () {
   "use strict";
 
   var PL = window.PL;
 
-  // Onde ficam guardados os filtros escolhidos. Guardar no aparelho
-  // (e não na nuvem) é de propósito: o tablet da recepção pode estar
-  // filtrado por um quiosque sem bagunçar o tablet do administrador.
   var LS_FILTROS = "pedidos_lagoa_filtros";
 
-  // Quanto tempo o cartão recém-chegado fica com a moldura âmbar.
-  // 12 s é o suficiente para o olho encontrar o cartão novo no meio
-  // dos outros sem que a tela vire uma árvore de natal.
+  // Tempo que o cartão recém-chegado fica com a moldura âmbar. 12 s dá
+  // para o olho achar o cartão novo sem a tela virar árvore de natal.
   var MS_DESTAQUE_NOVO = 12000;
 
-  // Espera antes de dizer ao banco "eu vi este pedido". Marcar na hora
+  // Espera antes de dizer ao banco "eu vi esta parte". Marcar na hora
   // seria mentira: o cartão pode ter aparecido com a recepção de costas.
-  // 4 s significa que a tela ficou aberta tempo suficiente para alguém ler.
   var MS_ATE_MARCAR_VISTO = 4000;
 
   // ------------------------------------------------------------------
@@ -45,33 +45,33 @@
   var filtros = {
     quiosque: "",        // "" = todos
     status: "abertos",   // "abertos" | "todos" | um status
+    destino: "",         // "" = todos | "cozinha" | "balcao"
     som: true,
     hQuiosque: "",       // filtros da tela de histórico
     hStatus: "todos",
   };
 
-  var telaViva = false;        // a tela "Pedidos" está montada agora?
-  var histViva = false;        // a tela "Histórico" está montada agora?
-  var caixaPedidos = null;     // o #conteudo da tela de pedidos
-  var caixaHist = null;        // o #conteudo da tela de histórico
-  var temporizadores = [];     // tudo que precisa morrer no aoSair()
+  var telaViva = false;
+  var histViva = false;
+  var caixaPedidos = null;
+  var caixaHist = null;
+  var temporizadores = [];
   var vistoTimer = null;
   var chegadaTimer = null;
-  var novos = {};              // id do pedido -> hora em que ele apareceu
-  var jaAvisados = {};         // ids já mandados para o "marcar como visto"
-  var listaNaTela = [];        // o que está desenhado neste momento
+  var novas = {};              // id da parte -> hora em que ela apareceu
+  var jaAvisados = {};         // partes já mandadas para o "marcar visto"
+  var naTela = [];             // as partes desenhadas neste momento
 
   // ==================================================================
   //  FILTROS GUARDADOS
+  //  Ficam no aparelho (e não na nuvem) de propósito: o tablet da
+  //  recepção pode estar filtrado sem bagunçar o do administrador.
   // ==================================================================
   function lerFiltros() {
     try {
       var g = JSON.parse(localStorage.getItem(LS_FILTROS) || "{}");
-      if (g && typeof g === "object") {
-        filtros = Object.assign(filtros, g);
-      }
+      if (g && typeof g === "object") filtros = Object.assign(filtros, g);
     } catch (e) { /* aparelho sem localStorage: segue com o padrão */ }
-    // o som só é "ligado" de verdade se o dono do sistema também deixou
     if (PL.CFG.somPedidoNovo === false) filtros.som = false;
   }
 
@@ -83,28 +83,23 @@
   //  PEQUENAS AJUDAS
   // ==================================================================
 
-  // O pedido traz o quiosque junto (join do banco), mas nem sempre:
-  // numa conexão ruim, ou num pedido feito por outra tela, ele pode vir
-  // vazio. Aí procuramos pelo kiosk_id no catálogo, e só desistimos
-  // depois disso — a recepção NUNCA pode ficar sem saber de quem é.
-  function quiosqueDoPedido(p) {
-    if (p.quiosque && (p.quiosque.name || p.quiosque.number)) return p.quiosque;
-    var lista = (PL.catalogo && PL.catalogo.quiosques) || [];
-    var achado = null;
-    for (var i = 0; i < lista.length; i++) {
-      if (lista[i].id === p.kiosk_id) { achado = lista[i]; break; }
+  // A parte traz o pedido junto (PL.achatarPartes). Mesmo assim o quiosque
+  // pode faltar numa conexão ruim — e a recepção NUNCA pode ficar sem saber
+  // de quem é o pedido.
+  function nomeDoQuiosque(t) {
+    var p = t.pedido || {};
+    if (p.quiosque && (p.quiosque.name || p.quiosque.number)) {
+      return p.quiosque.name || ("Quiosque " + p.quiosque.number);
     }
-    return achado;
+    var lista = (PL.catalogo && PL.catalogo.quiosques) || [];
+    for (var i = 0; i < lista.length; i++) {
+      if (lista[i].id === t.kiosk_id) return lista[i].name || ("Quiosque " + lista[i].number);
+    }
+    return "Quiosque ?";
   }
 
-  function nomeDoQuiosque(p) {
-    var q = quiosqueDoPedido(p);
-    if (!q) return "Quiosque ?";
-    return q.name || ("Quiosque " + q.number);
-  }
-
-  // O semáforo sai da configuração do cliente na nuvem; o config.js só
-  // serve enquanto o administrador não ajustou nada.
+  // O semáforo conta desde que o QUIOSQUE pediu — é o tempo que o cliente
+  // sente. (A cozinha tem outro relógio, contando de quando ela recebeu.)
   function slaAtencao() {
     var c = (PL.ctx && PL.ctx.cliente) || {};
     return Number(c.sla_warn_minutes) || Number(PL.CFG.slaAtencao) || 5;
@@ -113,14 +108,13 @@
     var c = (PL.ctx && PL.ctx.cliente) || {};
     return Number(c.sla_late_minutes) || Number(PL.CFG.slaAtrasado) || 12;
   }
-
   function grauDoTempo(min) {
     if (min >= slaAtrasado()) return "atrasado";
     if (min >= slaAtencao()) return "atencao";
     return "";
   }
 
-  function ehAberto(p) { return PL.ABERTOS.indexOf(p.status) >= 0; }
+  function ehAberto(t) { return PL.ABERTOS.indexOf(t.status) >= 0; }
 
   function minutosEntre(inicio, fim) {
     if (!inicio || !fim) return null;
@@ -129,9 +123,9 @@
     return Math.max(0, Math.round(d));
   }
 
-  function quantosItens(p) {
-    if (p.items_count) return Number(p.items_count);
-    return (p.itens || []).reduce(function (s, it) { return s + (Number(it.qty) || 0); }, 0);
+  function quantosItens(t) {
+    if (t.items_count) return Number(t.items_count);
+    return (t.itens || []).reduce(function (s, it) { return s + (Number(it.qty) || 0); }, 0);
   }
 
   function totalDoItem(it) {
@@ -139,25 +133,16 @@
     return (Number(it.unit_price_cents) || 0) * (Number(it.qty) || 1);
   }
 
-  function rotuloStatus(s) {
-    return (PL.STATUS[s] && PL.STATUS[s].rotulo) || s || "?";
-  }
-  function iconeStatus(s) {
-    return (PL.STATUS[s] && PL.STATUS[s].icone) || "";
-  }
+  function rotuloStatus(s) { return (PL.STATUS[s] && PL.STATUS[s].rotulo) || s || "?"; }
+  function curtoStatus(s)  { return (PL.STATUS[s] && PL.STATUS[s].curto)  || s || "?"; }
+  function iconeStatus(s)  { return (PL.STATUS[s] && PL.STATUS[s].icone)  || ""; }
 
-  function somLigado() {
-    return PL.CFG.somPedidoNovo !== false && filtros.som !== false;
-  }
+  function somLigado() { return PL.CFG.somPedidoNovo !== false && filtros.som !== false; }
 
-  function ehNovo(p) {
-    return !!novos[p.id] && (Date.now() - novos[p.id]) < MS_DESTAQUE_NOVO;
-  }
+  function ehNova(t) { return !!novas[t.id] && (Date.now() - novas[t.id]) < MS_DESTAQUE_NOVO; }
 
   function guardarTemporizador(t) { temporizadores.push(t); return t; }
 
-  // clearTimeout e clearInterval mexem na mesma lista do navegador, mas
-  // chamar os dois deixa claro que aqui morrem relógios dos dois tipos.
   function limparTemporizadores() {
     temporizadores.forEach(function (t) { clearTimeout(t); clearInterval(t); });
     temporizadores = [];
@@ -166,129 +151,151 @@
   }
 
   // ==================================================================
-  //  O CARTÃO DO PEDIDO
-  //  É o que a recepção olha o dia inteiro: quem pediu, o que pediu,
-  //  há quanto tempo e o botão do próximo passo.
+  //  O CARTÃO DE UMA PARTE
   // ==================================================================
   function botao(classe, texto, atributos) {
     return '<button type="button" class="btn ' + classe + '" ' + (atributos || "") + ">" +
       PL.esc(texto) + "</button>";
   }
 
-  // Os botões seguem o caminho natural do pedido. "Voltar" existe porque
-  // errar de dedo no tablet é normal — e desfazer tem que ser mais fácil
-  // do que explicar para a cozinha.
-  function acoesDoPedido(p, compacto) {
+  // Os botões saem do DESTINO da parte, não de um "se for pesca" espalhado
+  // pela tela. Quem sabe qual é o próximo passo é o núcleo (PL.proximoStatus),
+  // que segue a mesma regra que o banco cobra.
+  function acoesDaParte(t, compacto) {
     var tam = compacto ? " btn-sm" : "";
-    if (p.status === "recebido") {
-      return botao("btn-info" + tam, "👨‍🍳 Passei p/ cozinha", 'data-ir="cozinha"') +
-             botao("btn-danger" + tam, "⚠ Pediu errado", 'data-erro="1"');
+    var cozinha = t.destination === "cozinha";
+
+    if (!ehAberto(t)) {
+      // entregue / erro / cancelado: só a saída de emergência
+      return botao("btn-neutral btn-sm", "↺ Reabrir", 'data-ir="recebido" data-confirmar="1"');
     }
-    if (p.status === "cozinha") {
-      return botao("btn-ok" + tam, "✅ Pronto", 'data-ir="pronto"') +
-             botao("btn-neutral" + tam, "↩ Voltar", 'data-ir="recebido"') +
-             botao("btn-danger" + tam, "⚠ Pediu errado", 'data-erro="1"');
+
+    if (t.status === "recebido") {
+      return (cozinha
+        ? botao("btn-info" + tam, "👨‍🍳 Passei p/ cozinha", 'data-ir="cozinha"')
+        // no balcão a recepção separa e o item já pode ir para o quiosque
+        : botao("btn-ok" + tam, "🎣 Separei", 'data-ir="pronto"')) +
+        botao("btn-danger" + tam, "⚠ Pediu errado", 'data-erro="1"');
     }
-    if (p.status === "pronto") {
+
+    if (t.status === "cozinha") {
+      // Quem marca pronto é a COZINHA. O botão aqui é a saída para quando
+      // o tablet da cozinha estiver sem bateria — por isso ele é pequeno e
+      // vem depois, não na frente.
+      return '<span class="hint" style="flex:1 1 100%">Esperando a cozinha marcar como pronto.</span>' +
+        botao("btn-neutral btn-sm", "↩ Voltar", 'data-ir="recebido"') +
+        botao("btn-ok btn-sm", "✅ Pronto (pela cozinha)", 'data-ir="pronto"') +
+        botao("btn-danger btn-sm", "⚠ Pediu errado", 'data-erro="1"');
+    }
+
+    if (t.status === "pronto") {
       return botao("btn-primary" + tam, "📦 Entregue", 'data-ir="entregue"') +
-             botao("btn-neutral" + tam, "↩ Voltar", 'data-ir="cozinha"');
+        botao("btn-neutral" + tam, "↩ Voltar", 'data-ir="' + (cozinha ? "cozinha" : "recebido") + '"');
     }
-    // entregue / erro / cancelado: só a saída de emergência
-    return botao("btn-neutral btn-sm", "↺ Reabrir", 'data-ir="recebido" data-confirmar="1"');
+
+    return "";
   }
 
   function linhaDoItem(it) {
-    var obs = it.notes
-      ? '<span class="pi-obs">↳ ' + PL.esc(it.notes) + "</span>"
-      : "";
+    var obs = it.notes ? '<span class="pi-obs">↳ ' + PL.esc(it.notes) + "</span>" : "";
     return '<div class="pi">' +
-        '<span class="pi-qtd">' + PL.esc(it.qty) + "</span>" +
+        '<span class="pi-qtd">' + PL.esc(it.qty) + "×</span>" +
         '<span class="pi-nome">' + PL.esc(it.product_name) + obs + "</span>" +
         '<span class="pi-valor">' + PL.dinheiro(totalDoItem(it)) + "</span>" +
       "</div>";
   }
 
-  function metasDoPedido(p) {
+  function metasDaParte(t) {
+    var p = t.pedido || {};
     var partes = [];
     if (p.customer_name) partes.push('<span class="meta">👤 ' + PL.esc(p.customer_name) + "</span>");
     if (p.table_label)   partes.push('<span class="meta">📍 ' + PL.esc(p.table_label) + "</span>");
-    var n = quantosItens(p);
+    var n = quantosItens(t);
     partes.push('<span class="meta">' + n + (n === 1 ? " item" : " itens") + "</span>");
     if (p.notes)        partes.push('<span class="meta obs">📝 ' + PL.esc(p.notes) + "</span>");
-    if (p.error_reason) partes.push('<span class="meta erro">⚠ ' + PL.esc(p.error_reason) + "</span>");
+    if (t.error_reason) partes.push('<span class="meta erro">⚠ ' + PL.esc(t.error_reason) + "</span>");
     return '<div class="pedido-meta">' + partes.join("") + "</div>";
   }
 
-  // opcoes.compacto → cartão do "Fechados hoje" (sem a lista de itens)
-  // opcoes.comChip  → mostra a etiqueta do status (usado na lista única,
-  //                   onde não existe a coluna para dizer em que pé está)
-  function cartaoDoPedido(p, opcoes) {
-    var o = opcoes || {};
-    var aberto = ehAberto(p);
-    var min = PL.minutosDesde(p.created_at);
-    var grau = aberto ? grauDoTempo(min) : "";
-    var itens = p.itens || [];
+  // Um pedido dividido gera dois cartões com o mesmo número. Sem este
+  // lembrete, a recepção entregaria a comida achando que acabou — e a
+  // isca ficaria para trás no balcão.
+  function avisoDaOutraMetade(t) {
+    var irmas = ((t.pedido || {}).partes || []).filter(function (x) { return x.id !== t.id; });
+    if (!irmas.length) return "";
+    return '<div class="tem-irma">🔗 Este pedido tem outra parte: ' +
+      irmas.map(function (x) {
+        var d = PL.destinoDe(x.destination);
+        return "<b>" + PL.esc(d.rotulo) + "</b> (" + PL.esc(curtoStatus(x.status)) + ")";
+      }).join(" · ") + "</div>";
+  }
 
-    // canto direito de cima: relógio do semáforo nos abertos, etiqueta
-    // de situação nos já fechados
+  // opcoes.compacto → cartão do "Fechados hoje" (sem a lista de itens)
+  function cartaoDaParte(t, opcoes) {
+    var o = opcoes || {};
+    var p = t.pedido || {};
+    var aberto = ehAberto(t);
+    var min = PL.minutosDesde(p.created_at || t.created_at);
+    var grau = aberto ? grauDoTempo(min) : "";
+    var itens = t.itens || [];
+    var dest = PL.destinoDe(t.destination);
+
     var canto;
     if (aberto) {
       canto = '<span class="pedido-tempo' + (grau ? " " + grau : "") + '">' +
                 PL.esc(PL.tempoCurto(min)) + "</span>";
     } else {
-      // Só o pedido ENTREGUE mostra quanto demorou. Num pedido errado ou
-      // cancelado esse número não quer dizer nada — e "ERRADO · agora"
-      // parece que alguma coisa acabou de dar errado.
-      var gasto = minutosEntre(p.created_at, p.delivered_at);
-      canto = '<span class="status-chip status-' + PL.esc(p.status) + '">' +
-                PL.esc((PL.STATUS[p.status] || {}).curto || p.status) +
+      // Só a parte ENTREGUE mostra quanto demorou. Em "pediu errado" esse
+      // número não quer dizer nada — e "ERRADO · agora" parece que algo
+      // acabou de dar errado neste instante.
+      var gasto = minutosEntre(p.created_at || t.created_at, t.delivered_at);
+      canto = '<span class="status-chip status-' + PL.esc(t.status) + '">' +
+                PL.esc(curtoStatus(t.status)) +
                 (gasto === null ? "" : " · " + PL.esc(PL.tempoCurto(gasto))) +
               "</span>";
     }
-
-    var chip = (o.comChip && aberto)
-      ? ' <span class="status-chip status-' + PL.esc(p.status) + '">' +
-        PL.esc((PL.STATUS[p.status] || {}).curto || p.status) + "</span>"
-      : "";
 
     var corpoItens = o.compacto
       ? ""
       : '<div class="pedido-itens">' + (itens.length
           ? itens.map(linhaDoItem).join("")
-          : '<div class="hint">Este pedido chegou sem itens — confira com o quiosque.</div>') + "</div>";
+          : '<div class="hint">Esta parte chegou sem itens — confira com o quiosque.</div>') + "</div>";
 
-    // no cartão compacto os itens ficam escondidos, então damos um jeito
-    // de ver o que era sem sair da tela
     var verItens = o.compacto
       ? botao("btn-neutral btn-sm", "👁 Ver itens", 'data-detalhe="1"')
       : "";
 
     var classes = "pedido" +
-      (ehNovo(p) ? " novo" : "") +
+      (ehNova(t) ? " novo" : "") +
       (aberto && grau === "atrasado" ? " atrasado" : "");
 
-    return '<article class="' + classes + '" data-status="' + PL.esc(p.status) + '"' +
-             ' data-id="' + PL.esc(p.id) + '"' +
-             (aberto ? ' data-relogio="1" data-criado="' + PL.esc(p.created_at) + '"' : "") + ">" +
+    return '<article class="' + classes + '" data-status="' + PL.esc(t.status) + '"' +
+             ' data-destino="' + PL.esc(t.destination) + '"' +
+             ' data-parte="' + PL.esc(t.id) + '">' +
         '<div class="pedido-topo">' +
           '<div class="pedido-quiosque">' +
-            "<b>" + PL.esc(nomeDoQuiosque(p)) + "</b>" +
+            "<b>" + PL.esc(nomeDoQuiosque(t)) + "</b>" +
             '<span class="pedido-num">Pedido #' + PL.esc(p.daily_number) +
-              " · " + PL.esc(PL.hora(p.created_at)) + chip + "</span>" +
+              " · " + PL.esc(PL.hora(p.created_at || t.created_at)) + "</span>" +
           "</div>" +
-          canto +
+          '<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">' +
+            '<span class="destino-chip destino-' + PL.esc(t.destination) + '">' +
+              dest.icone + " " + PL.esc(dest.rotulo) + "</span>" +
+            canto +
+          "</div>" +
         "</div>" +
         corpoItens +
-        metasDoPedido(p) +
+        metasDaParte(t) +
+        avisoDaOutraMetade(t) +
         '<div class="pedido-rodape">' +
-          '<span class="pedido-total">' + PL.dinheiro(p.total_cents) + "</span>" +
-          '<div class="pedido-acoes">' + verItens + acoesDoPedido(p, !!o.compacto) + "</div>" +
+          '<span class="pedido-total">' + PL.dinheiro(t.total_cents) + "</span>" +
+          '<div class="pedido-acoes">' + verItens + acoesDaParte(t, !!o.compacto) + "</div>" +
         "</div>" +
       "</article>";
   }
 
   // ==================================================================
-  //  TELA "PEDIDOS" — desenho
+  //  TELA "PEDIDOS"
   // ==================================================================
   function opcoesDeQuiosque(escolhido) {
     var lista = ((PL.catalogo && PL.catalogo.quiosques) || [])
@@ -316,15 +323,26 @@
     return html;
   }
 
-  // Quais situações o filtro de cima está pedindo agora.
+  function opcoesDeDestino(escolhido) {
+    var html = '<option value="">Cozinha e balcão</option>';
+    Object.keys(PL.DESTINOS).forEach(function (d) {
+      var x = PL.DESTINOS[d];
+      html += '<option value="' + PL.esc(d) + '"' + (d === escolhido ? " selected" : "") + ">" +
+        x.icone + " Só " + PL.esc(x.rotulo.toLowerCase()) + "</option>";
+    });
+    return html;
+  }
+
   function statusEscolhidos() {
     if (filtros.status === "todos") return Object.keys(PL.STATUS);
     if (filtros.status === "abertos") return PL.ABERTOS.slice();
     return [filtros.status];
   }
 
-  function passaNoQuiosque(p) {
-    return !filtros.quiosque || p.kiosk_id === filtros.quiosque;
+  function passaNoFiltro(t) {
+    if (filtros.quiosque && t.kiosk_id !== filtros.quiosque) return false;
+    if (filtros.destino && t.destination !== filtros.destino) return false;
+    return true;
   }
 
   function montarPedidos(caixa) {
@@ -332,10 +350,8 @@
     caixaPedidos = caixa;
     lerFiltros();
 
-    // O switch do som só aparece se o dono do sistema deixou o som ligado
-    // no config. Um botão que não faz nada é pior do que botão nenhum.
     var switchSom = PL.CFG.somPedidoNovo === false ? "" :
-      '<label class="switch" title="Toca um aviso quando um quiosque manda pedido">' +
+      '<label class="switch" title="Toca quando chega pedido e quando a cozinha marca pronto">' +
         '<input type="checkbox" id="pdSom"' + (filtros.som !== false ? " checked" : "") + " />" +
         '<span class="trilho"></span>' +
         "<span>🔔 Som</span>" +
@@ -348,6 +364,8 @@
           '<div class="filtros">' +
             '<select id="pdQuiosque" aria-label="Filtrar por quiosque">' +
               opcoesDeQuiosque(filtros.quiosque) + "</select>" +
+            '<select id="pdDestino" aria-label="Filtrar por destino">' +
+              opcoesDeDestino(filtros.destino) + "</select>" +
             '<select id="pdStatus" aria-label="Filtrar por situação">' +
               opcoesDeStatus(filtros.status, true) + "</select>" +
             switchSom +
@@ -363,19 +381,18 @@
     // tempo todo, e um ouvinte por botão viraria lixo acumulado.
     // O núcleo esvazia o #conteudo mas reaproveita o MESMO elemento, então
     // tiramos o ouvinte antes de pôr — senão, quem entra e sai da aba três
-    // vezes acaba mandando o mesmo pedido para a cozinha três vezes.
+    // vezes acaba mandando a mesma parte para a cozinha três vezes.
     caixa.removeEventListener("click", cliqueNaTela);
     caixa.addEventListener("click", cliqueNaTela);
 
     PL.$("#pdQuiosque", caixa).addEventListener("change", function () {
-      filtros.quiosque = this.value;
-      gravarFiltros();
-      desenharPedidos();
+      filtros.quiosque = this.value; gravarFiltros(); desenharPedidos();
+    });
+    PL.$("#pdDestino", caixa).addEventListener("change", function () {
+      filtros.destino = this.value; gravarFiltros(); desenharPedidos();
     });
     PL.$("#pdStatus", caixa).addEventListener("change", function () {
-      filtros.status = this.value;
-      gravarFiltros();
-      desenharPedidos();
+      filtros.status = this.value; gravarFiltros(); desenharPedidos();
     });
     var som = PL.$("#pdSom", caixa);
     if (som) {
@@ -383,8 +400,7 @@
         filtros.som = this.checked;
         gravarFiltros();
         PL.aviso(this.checked ? "Som ligado." : "Som desligado.", "ok");
-        // toca uma vez na hora de ligar: assim dá para conferir o volume
-        // do tablet antes de o movimento começar
+        // toca uma vez ao ligar: dá para conferir o volume antes do movimento
         if (this.checked) PL.tocarAviso(1);
       });
     }
@@ -396,18 +412,17 @@
   function desenharPedidos() {
     if (!caixaPedidos) return;
 
-    var todos = PL.pedidos || [];
-    var doQuiosque = todos.filter(passaNoQuiosque);
+    var todas = PL.partes;
+    var filtradas = todas.filter(passaNoFiltro);
     var escolhidos = statusEscolhidos();
     var abertosEscolhidos = escolhidos.filter(function (s) { return PL.ABERTOS.indexOf(s) >= 0; });
     var fechadosEscolhidos = escolhidos.filter(function (s) { return PL.FECHADOS.indexOf(s) >= 0; });
 
     var quadro = PL.$("#pdQuadro", caixaPedidos);
     var caixaFechados = PL.$("#pdFechados", caixaPedidos);
-    listaNaTela = [];
+    naTela = [];
 
-    // Dia sem nenhum pedido: a tela nunca fica em branco.
-    if (!todos.length) {
+    if (!todas.length) {
       quadro.innerHTML =
         '<div class="vazio">' +
           "<b>Nenhum pedido ainda hoje.</b>" +
@@ -419,13 +434,12 @@
     }
 
     if (abertosEscolhidos.length) {
-      // ---- o quadro de trabalho: só os pedidos em andamento ----
-      var emAberto = doQuiosque
-        .filter(function (p) { return abertosEscolhidos.indexOf(p.status) >= 0; })
+      var emAberto = filtradas
+        .filter(function (t) { return abertosEscolhidos.indexOf(t.status) >= 0; })
         .slice()
-        // o mais antigo em cima: quem espera há mais tempo é o próximo
-        .sort(function (a, b) { return new Date(a.created_at) - new Date(b.created_at); });
-      listaNaTela = listaNaTela.concat(emAberto);
+        // a mais antiga em cima: quem espera há mais tempo é a próxima
+        .sort(ordemDeTrabalho);
+      naTela = naTela.concat(emAberto);
 
       if (PL.CFG.colunasStatus !== false && abertosEscolhidos.length > 1) {
         quadro.innerHTML = desenharColunas(emAberto);
@@ -433,42 +447,43 @@
         quadro.innerHTML = desenharListaUnica(emAberto);
       }
 
-      // ---- e embaixo, o que já foi fechado hoje ----
       // O filtro de cima manda no quadro, não aqui: escolher "Na cozinha"
       // não pode fazer o fechamento do dia sumir da vista.
-      var fechados = doQuiosque
-        .filter(function (p) { return !ehAberto(p); })
+      var fechadas = filtradas
+        .filter(function (t) { return !ehAberto(t); })
         .slice()
-        .sort(function (a, b) { return new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at); });
+        .sort(function (a, b) {
+          return new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at);
+        });
 
       var limite = Number(PL.CFG.mostrarEntreguesHoje);
       if (!(limite > 0)) limite = 20;
-      var mostrar = fechados.slice(0, limite);
-      listaNaTela = listaNaTela.concat(mostrar);
+      var mostrar = fechadas.slice(0, limite);
+      naTela = naTela.concat(mostrar);
 
       caixaFechados.hidden = false;
       caixaFechados.innerHTML =
         '<div class="card-head">' +
           '<h2 class="card-title">📦 Fechados hoje</h2>' +
-          '<span class="hint">' + fechados.length +
-            (fechados.length === 1 ? " pedido encerrado" : " pedidos encerrados") +
-            (fechados.length > mostrar.length ? " · mostrando os " + mostrar.length + " últimos" : "") +
+          '<span class="hint">' + fechadas.length +
+            (fechadas.length === 1 ? " parte encerrada" : " partes encerradas") +
+            (fechadas.length > mostrar.length ? " · mostrando as " + mostrar.length + " últimas" : "") +
           "</span>" +
         "</div>" +
         (mostrar.length
           ? '<div class="coluna-lista">' +
-              mostrar.map(function (p) { return cartaoDoPedido(p, { compacto: true }); }).join("") +
+              mostrar.map(function (t) { return cartaoDaParte(t, { compacto: true }); }).join("") +
             "</div>"
-          : '<div class="hint">Nada encerrado ainda. Assim que um pedido for entregue, ele desce para cá.</div>');
+          : '<div class="hint">Nada encerrado ainda. Assim que uma parte for entregue, ela desce para cá.</div>');
     } else {
-      // O filtro pediu SÓ situações já encerradas: o quadro vira a lista
-      // dessas, e o card de fechados sairia repetido — some.
-      var soFechados = doQuiosque
-        .filter(function (p) { return fechadosEscolhidos.indexOf(p.status) >= 0; })
+      // O filtro pediu SÓ situações encerradas: o quadro vira a lista delas
+      // e o card de fechados sairia repetido — some.
+      var soFechadas = filtradas
+        .filter(function (t) { return fechadosEscolhidos.indexOf(t.status) >= 0; })
         .slice()
         .sort(function (a, b) { return new Date(b.created_at) - new Date(a.created_at); });
-      listaNaTela = soFechados.slice();
-      quadro.innerHTML = desenharListaUnica(soFechados);
+      naTela = soFechadas.slice();
+      quadro.innerHTML = desenharListaUnica(soFechadas);
       caixaFechados.hidden = true;
     }
 
@@ -476,34 +491,45 @@
     agendarVistos();
   }
 
-  // Três colunas lado a lado: é o desenho que a recepção entende sem
-  // treinamento — o cartão anda da esquerda para a direita até sair.
+  // O que espera há mais tempo vem primeiro. O horário que vale é o do
+  // PEDIDO (quando o quiosque pediu), não o da parte: é o tempo que o
+  // cliente sente.
+  function ordemDeTrabalho(a, b) {
+    var da = new Date((a.pedido && a.pedido.created_at) || a.created_at);
+    var db = new Date((b.pedido && b.pedido.created_at) || b.created_at);
+    return da - db;
+  }
+
+  // Três colunas: é o desenho que a recepção entende sem treinamento — o
+  // cartão anda da esquerda para a direita até sair. A coluna do meio só
+  // tem comida: o que é do balcão pula direto de "recebido" para "pronto".
   function desenharColunas(lista) {
+    var explica = {
+      recebido: "Confira e libere",
+      cozinha:  "Com a cozinha",
+      pronto:   "Leve ao quiosque",
+    };
     return '<div class="quadro">' + PL.ABERTOS.map(function (s) {
       var doStatus = lista
-        .filter(function (p) { return p.status === s; })
+        .filter(function (t) { return t.status === s; })
         .slice()
-        // o mais antigo em cima: quem está esperando há mais tempo é
-        // sempre o próximo a ser resolvido
-        .sort(function (a, b) { return new Date(a.created_at) - new Date(b.created_at); });
+        .sort(ordemDeTrabalho);
 
       return '<section class="coluna" data-status="' + PL.esc(s) + '">' +
           '<div class="coluna-head">' +
             "<h2>" + iconeStatus(s) + " " + PL.esc(rotuloStatus(s)) + "</h2>" +
             '<span class="n">' + doStatus.length + "</span>" +
           "</div>" +
+          '<p class="hint" style="margin:-6px 4px 10px;font-size:.78rem">' + explica[s] + "</p>" +
           '<div class="coluna-lista">' +
             (doStatus.length
-              ? doStatus.map(function (p) { return cartaoDoPedido(p, {}); }).join("")
+              ? doStatus.map(function (t) { return cartaoDaParte(t, {}); }).join("")
               : '<p class="hint" style="text-align:center;padding:12px 4px;margin:0">Nada aqui.</p>') +
           "</div>" +
         "</section>";
     }).join("") + "</div>";
   }
 
-  // A ordem já vem decidida por quem chamou: o que está EM ABERTO sobe o
-  // mais antigo primeiro (é fila de trabalho), o que já FECHOU mostra o
-  // mais recente primeiro (é consulta).
   function desenharListaUnica(lista) {
     if (!lista.length) {
       return '<div class="vazio">' +
@@ -512,21 +538,22 @@
       "</div>";
     }
     return '<div class="coluna-lista">' +
-      lista.map(function (p) { return cartaoDoPedido(p, { comChip: true }); }).join("") +
+      lista.map(function (t) { return cartaoDaParte(t, {}); }).join("") +
       "</div>";
   }
 
   // ==================================================================
   //  CONTADORES
-  //  Contam SEMPRE o dia inteiro, sem olhar o filtro: um pedido atrasado
-  //  escondido por um filtro seria o pior defeito possível nesta tela.
+  //  Contam SEMPRE o dia inteiro, sem olhar o filtro: uma parte atrasada
+  //  escondida por um filtro seria o pior defeito possível nesta tela.
   // ==================================================================
   function contarAbertos() {
-    var abertos = (PL.pedidos || []).filter(ehAberto);
-    var atrasados = abertos.filter(function (p) {
-      return PL.minutosDesde(p.created_at) >= slaAtrasado();
+    var abertas = PL.partes.filter(ehAberto);
+    var atrasadas = abertas.filter(function (t) {
+      return PL.minutosDesde((t.pedido && t.pedido.created_at) || t.created_at) >= slaAtrasado();
     });
-    return { abertos: abertos.length, atrasados: atrasados.length };
+    var prontas = abertas.filter(function (t) { return t.status === "pronto"; });
+    return { abertas: abertas.length, atrasadas: atrasadas.length, prontas: prontas.length };
   }
 
   function atualizarResumo() {
@@ -534,25 +561,29 @@
 
     var linha = PL.$("#pdResumo", caixaPedidos || document);
     if (linha) {
-      var txt = c.abertos
-        ? c.abertos + (c.abertos === 1 ? " pedido em aberto" : " pedidos em aberto")
-        : "Tudo em dia — nenhum pedido em aberto.";
-      if (c.atrasados) {
-        txt += " · ⚠ " + c.atrasados +
-          (c.atrasados === 1 ? " passou" : " passaram") + " de " + slaAtrasado() + " min";
+      var txt = c.abertas
+        ? c.abertas + (c.abertas === 1 ? " parte em aberto" : " partes em aberto")
+        : "Tudo em dia — nada em aberto.";
+      if (c.prontas) {
+        txt += " · ✅ " + c.prontas + (c.prontas === 1 ? " pronta para levar" : " prontas para levar");
+      }
+      if (c.atrasadas) {
+        txt += " · ⚠ " + c.atrasadas +
+          (c.atrasadas === 1 ? " passou" : " passaram") + " de " + slaAtrasado() + " min";
       }
       linha.textContent = txt;
     }
 
-    atualizarContadorDoTopo(c.abertos);
+    atualizarContadorDoTopo(c);
   }
 
-  // O selo do cabeçalho acompanha a recepção mesmo quando ela está em
-  // outra aba do app — por isso ele vive fora desta tela.
-  function atualizarContadorDoTopo(quantos) {
+  // O selo do cabeçalho acompanha a recepção mesmo em outra aba do app —
+  // por isso ele vive fora desta tela. Quando tem coisa PRONTA esperando,
+  // ele mostra isso: é a informação que faz alguém levantar do banquinho.
+  function atualizarContadorDoTopo(c) {
     var el = PL.$("#contadorTopo");
     if (!el) return;
-    if (!quantos) {
+    if (!c || !c.abertas) {
       el.className = "contador zero";
       el.textContent = "";
       el.hidden = true;
@@ -560,7 +591,9 @@
     }
     el.className = "contador";
     el.hidden = false;
-    el.innerHTML = "<b>" + quantos + "</b> em aberto";
+    el.innerHTML = c.prontas
+      ? "<b>" + c.prontas + "</b> pronto p/ levar"
+      : "<b>" + c.abertas + "</b> em aberto";
   }
 
   function limparContadorDoTopo() {
@@ -573,60 +606,84 @@
 
   // ==================================================================
   //  RELÓGIOS
-  //  A cada tique só os números mudam. Redesenhar a tela inteira faria
-  //  o dedo perder o botão no meio do toque e a rolagem pular.
+  //  A cada tique só os números mudam. Redesenhar a tela inteira faria o
+  //  dedo perder o botão no meio do toque e a rolagem pular.
   // ==================================================================
   function atualizarRelogios() {
     if (!caixaPedidos) return;
-    PL.$$(".pedido[data-relogio]", caixaPedidos).forEach(function (el) {
-      var min = PL.minutosDesde(el.dataset.criado);
+    var porId = {};
+    PL.partes.forEach(function (t) { porId[t.id] = t; });
+
+    PL.$$(".pedido[data-parte]", caixaPedidos).forEach(function (el) {
+      var t = porId[el.dataset.parte];
+      if (!t || !ehAberto(t)) return;
+      var min = PL.minutosDesde((t.pedido && t.pedido.created_at) || t.created_at);
       var grau = grauDoTempo(min);
-      var t = PL.$(".pedido-tempo", el);
-      if (t) {
-        t.textContent = PL.tempoCurto(min);
-        t.className = "pedido-tempo" + (grau ? " " + grau : "");
+      var campo = PL.$(".pedido-tempo", el);
+      if (campo) {
+        campo.textContent = PL.tempoCurto(min);
+        campo.className = "pedido-tempo" + (grau ? " " + grau : "");
       }
       el.classList.toggle("atrasado", grau === "atrasado");
-      // o destaque do "acabou de chegar" tem hora para acabar
-      if (el.classList.contains("novo") && !novos[el.dataset.id]) el.classList.remove("novo");
+      if (el.classList.contains("novo") && !novas[el.dataset.parte]) el.classList.remove("novo");
     });
     atualizarResumo();
   }
 
   // ==================================================================
-  //  PEDIDO NOVO CHEGANDO
+  //  AVISOS
+  //  Dois momentos merecem som: chegou pedido, e a COZINHA TERMINOU.
+  //  O segundo é o motivo de a cozinha existir no sistema — sem ele a
+  //  recepção continuaria indo até a janela perguntar "já saiu?".
   // ==================================================================
-  function avisarChegada(chegaram) {
+  function avisarChegada(partes) {
     var agora = Date.now();
-    chegaram.forEach(function (p) { novos[p.id] = agora; });
+    partes.forEach(function (t) { novas[t.id] = agora; });
 
     if (somLigado()) PL.tocarAviso(3);
     PL.vibrar([200, 80, 200]);
 
-    // Um recado curto ajuda quem estava de costas para o tablet.
-    PL.aviso(chegaram.length === 1
-      ? "🔔 Pedido novo do " + nomeDoQuiosque(chegaram[0])
-      : "🔔 " + chegaram.length + " pedidos novos", "avisa");
+    PL.aviso(partes.length === 1
+      ? "🔔 Pedido novo do " + nomeDoQuiosque(partes[0])
+      : "🔔 " + partes.length + " pedidos novos", "avisa");
 
-    // apaga o destaque quando o tempo dele passar
+    programarLimpezaDoDestaque();
+  }
+
+  function avisarProntoDaCozinha(partes) {
+    var agora = Date.now();
+    partes.forEach(function (t) { novas[t.id] = agora; });
+
+    if (somLigado()) PL.tocarAviso(4);
+    PL.vibrar([120, 60, 120, 60, 260]);
+
+    PL.aviso(partes.length === 1
+      ? "✅ Cozinha terminou: #" + ((partes[0].pedido || {}).daily_number || "") +
+        " do " + nomeDoQuiosque(partes[0])
+      : "✅ A cozinha terminou " + partes.length + " comandas", "ok");
+
+    programarLimpezaDoDestaque();
+  }
+
+  function programarLimpezaDoDestaque() {
     clearTimeout(chegadaTimer);
     chegadaTimer = guardarTemporizador(setTimeout(function () {
-      Object.keys(novos).forEach(function (id) {
-        if (Date.now() - novos[id] >= MS_DESTAQUE_NOVO) delete novos[id];
+      Object.keys(novas).forEach(function (id) {
+        if (Date.now() - novas[id] >= MS_DESTAQUE_NOVO) delete novas[id];
       });
       if (telaViva) desenharPedidos();
     }, MS_DESTAQUE_NOVO + 200));
   }
 
-  // "Visto" só vale se alguém estava mesmo olhando: por isso o atraso e a
+  // "Visto" só vale se alguém estava mesmo olhando: daí o atraso e a
   // conferência de que a tela está aberta e na frente.
   function agendarVistos() {
     clearTimeout(vistoTimer);
     vistoTimer = guardarTemporizador(setTimeout(function () {
       if (!telaViva || document.visibilityState !== "visible") return;
-      var ids = listaNaTela
-        .filter(function (p) { return !p.ack_at && !jaAvisados[p.id]; })
-        .map(function (p) { return p.id; });
+      var ids = naTela
+        .filter(function (t) { return !t.ack_at && !jaAvisados[t.id]; })
+        .map(function (t) { return t.id; });
       if (!ids.length) return;
 
       ids.forEach(function (id) { jaAvisados[id] = true; });
@@ -638,18 +695,18 @@
     }, MS_ATE_MARCAR_VISTO));
   }
 
-  // Repetir o aviso enquanto houver pedido não visto é opcional (fica em
-  // repetirSom, no config). Serve para recepção com muito movimento.
+  // Repetir o aviso enquanto houver coisa esquecida é opcional (repetirSom).
   function ligarRepeticaoDoSom() {
     var seg = Number(PL.CFG.repetirSom) || 0;
     if (seg <= 0) return;
     guardarTemporizador(setInterval(function () {
       if (!telaViva || !somLigado()) return;
       if (document.visibilityState !== "visible") return;
-      var esquecidos = (PL.pedidos || []).filter(function (p) {
-        return p.status === "recebido" && !p.ack_at;
+      var esquecidas = PL.partes.filter(function (t) {
+        // pedido não visto OU comida pronta parada esperando alguém levar
+        return (t.status === "recebido" && !t.ack_at) || t.status === "pronto";
       });
-      if (esquecidos.length) PL.tocarAviso(2);
+      if (esquecidas.length) PL.tocarAviso(2);
     }, seg * 1000));
   }
 
@@ -671,8 +728,8 @@
     });
   }
 
-  function pedidoPorId(id) {
-    var lista = PL.pedidos || [];
+  function partePorId(id) {
+    var lista = PL.partes;
     for (var i = 0; i < lista.length; i++) if (lista[i].id === id) return lista[i];
     return null;
   }
@@ -682,37 +739,39 @@
     if (!alvo) return;
     var cartao = alvo.closest(".pedido");
     if (!cartao) return;
-    var p = pedidoPorId(cartao.dataset.id);
-    if (!p) return;
+    var t = partePorId(cartao.dataset.parte);
+    if (!t) return;
 
-    if (alvo.hasAttribute("data-detalhe")) { verItens(p); return; }
-    if (alvo.hasAttribute("data-erro"))    { abrirMotivo(p, cartao); return; }
+    if (alvo.hasAttribute("data-detalhe")) { verItens(t); return; }
+    if (alvo.hasAttribute("data-erro"))    { abrirMotivo(t, cartao); return; }
 
     var destino = alvo.dataset.ir;
     if (!destino) return;
 
     if (alvo.hasAttribute("data-confirmar")) {
       PL.confirmar({
-        titulo: "Reabrir o pedido #" + p.daily_number + "?",
-        texto: "Ele volta para a coluna <b>Recebido</b>, como se tivesse acabado de chegar. Use quando o pedido foi fechado por engano.",
+        titulo: "Reabrir esta parte do pedido #" + ((t.pedido || {}).daily_number || "") + "?",
+        texto: "Ela volta para <b>Recebido</b>, como se tivesse acabado de chegar. Use quando foi fechada por engano.",
         ok: "Reabrir",
       }).then(function (sim) {
-        if (sim) aplicarStatus(p, destino, null, cartao);
+        if (sim) aplicarStatus(t, destino, null, cartao);
       });
       return;
     }
 
-    aplicarStatus(p, destino, null, cartao);
+    aplicarStatus(t, destino, null, cartao);
   }
 
   // Trava o cartão inteiro enquanto o banco não responde: com dois toques
-  // rápidos o pedido pularia uma etapa e a cozinha ficaria sem aviso.
-  function aplicarStatus(p, status, motivo, cartao) {
+  // rápidos a parte pularia uma etapa e a cozinha ficaria sem aviso.
+  function aplicarStatus(t, status, motivo, cartao) {
     travarCartao(cartao);
-    return Promise.resolve(PL.backend.mudarStatus(p.id, status, motivo))
+    var num = (t.pedido || {}).daily_number || "";
+    return Promise.resolve(PL.backend.mudarStatusParte(t.id, status, motivo))
       .then(function () { return PL.recarregarPedidos(); })
       .then(function () {
-        PL.aviso("Pedido #" + p.daily_number + ": " + rotuloStatus(status).toLowerCase() + ".", "ok");
+        PL.aviso("Pedido #" + num + " (" + PL.destinoDe(t.destination).rotulo.toLowerCase() + "): " +
+          rotuloStatus(status).toLowerCase() + ".", "ok");
       })
       .catch(function (e) {
         destravarCartao(cartao);
@@ -720,22 +779,25 @@
       });
   }
 
-  // O cartão compacto esconde os itens; este pop-up mostra o pedido
-  // inteiro sem tirar a recepção da tela.
-  function verItens(p) {
-    var itens = p.itens || [];
+  // O cartão compacto esconde os itens; este pop-up mostra a parte inteira
+  // sem tirar a recepção da tela.
+  function verItens(t) {
+    var itens = t.itens || [];
+    var p = t.pedido || {};
+    var dest = PL.destinoDe(t.destination);
     PL.modal({
-      titulo: "Pedido #" + p.daily_number + " · " + nomeDoQuiosque(p),
+      titulo: "Pedido #" + (p.daily_number || "") + " · " + dest.rotulo + " · " + nomeDoQuiosque(t),
       corpo:
         '<div class="pedido-itens">' +
           (itens.length ? itens.map(linhaDoItem).join("")
-                        : '<div class="hint">Este pedido não tem itens registrados.</div>') +
+                        : '<div class="hint">Esta parte não tem itens registrados.</div>') +
         "</div>" +
-        metasDoPedido(p) +
+        metasDaParte(t) +
+        avisoDaOutraMetade(t) +
         '<div class="pedido-rodape">' +
-          '<span class="pedido-total">' + PL.dinheiro(p.total_cents) + "</span>" +
-          '<span class="status-chip status-' + PL.esc(p.status) + '">' +
-            PL.esc(rotuloStatus(p.status)) + "</span>" +
+          '<span class="pedido-total">' + PL.dinheiro(t.total_cents) + "</span>" +
+          '<span class="status-chip status-' + PL.esc(t.status) + '">' +
+            PL.esc(rotuloStatus(t.status)) + "</span>" +
         "</div>",
       botoes: [{ texto: "Fechar", classe: "btn-neutral" }],
     });
@@ -747,13 +809,22 @@
   //  relatório do fim do mês não explica nada. Por isso os botões de
   //  confirmar só acordam depois que alguém disse o que houve.
   // ==================================================================
-  function abrirMotivo(p, cartao) {
+  function abrirMotivo(t, cartao) {
     var prontos = Array.isArray(PL.CFG.motivosErro) ? PL.CFG.motivosErro : [];
     var escolhido = "";
+    var p = t.pedido || {};
+    var dest = PL.destinoDe(t.destination);
+    var temIrma = ((p.partes || []).length > 1);
 
     var html =
-      '<p class="hint" style="margin:0">Pedido <b>#' + PL.esc(p.daily_number) + "</b> do <b>" +
-        PL.esc(nomeDoQuiosque(p)) + "</b> — " + PL.dinheiro(p.total_cents) + ".</p>" +
+      '<p class="hint" style="margin:0">Parte <b>' + PL.esc(dest.rotulo) + "</b> do pedido <b>#" +
+        PL.esc(p.daily_number) + "</b> do <b>" + PL.esc(nomeDoQuiosque(t)) + "</b> — " +
+        PL.dinheiro(t.total_cents) + ".</p>" +
+      (temIrma
+        ? '<div class="aviso aviso-warn" style="font-weight:400;font-size:.88rem"><div>' +
+          "Só <b>esta parte</b> será encerrada. A outra metade do pedido continua andando normalmente." +
+          "</div></div>"
+        : "") +
       (prontos.length
         ? '<div class="motivos">' + prontos.map(function (m) {
             return '<button type="button" class="motivo" data-motivo="' + PL.esc(m) + '">' +
@@ -765,26 +836,26 @@
         '<input type="text" id="mtLivre" maxlength="140" placeholder="ex.: veio pedido do quiosque errado" />' +
       "</label>" +
       '<p class="hint" style="margin:0;line-height:1.5">' +
-        "<b>Pediu errado</b> é quando a cozinha <b>já tinha começado</b> — o gasto fica registrado. " +
-        "<b>Cancelar</b> é quando <b>nem começou</b>, então não houve prejuízo." +
+        "<b>Pediu errado</b> é quando já houve gasto — a cozinha começou, ou a isca foi aberta. " +
+        "<b>Cancelar</b> é quando <b>nada</b> foi feito ainda, então não houve prejuízo." +
       "</p>";
 
     PL.modal({
-      titulo: "⚠ Deu problema neste pedido",
+      titulo: "⚠ Deu problema nesta parte",
       corpo: html,
       botoes: [
         { texto: "Voltar", classe: "btn-neutral" },
-        { texto: "Cancelar o pedido", classe: "btn-neutral", id: "mtCancelar",
+        { texto: "Cancelar a parte", classe: "btn-neutral", id: "mtCancelar",
           acao: function (fechar) {
             if (!escolhido) return;
             fechar();
-            aplicarStatus(p, "cancelado", escolhido, cartao);
+            aplicarStatus(t, "cancelado", escolhido, cartao);
           } },
         { texto: "Pediu errado", classe: "btn-danger", id: "mtErro",
           acao: function (fechar) {
             if (!escolhido) return;
             fechar();
-            aplicarStatus(p, "erro", escolhido, cartao);
+            aplicarStatus(t, "erro", escolhido, cartao);
           } },
       ],
       aoAbrir: function (corpo, api) {
@@ -802,7 +873,6 @@
         }
         conferir();
 
-        // clicar num motivo pronto seleciona (e desmarca os outros)
         PL.$$(".motivo", corpo).forEach(function (b) {
           b.addEventListener("click", function () {
             var jaEra = b.classList.contains("is-sel");
@@ -815,10 +885,10 @@
 
         // texto escrito à mão vence o botão pronto
         livre.addEventListener("input", function () {
-          var t = livre.value.trim();
-          if (t) {
+          var t2 = livre.value.trim();
+          if (t2) {
             PL.$$(".motivo", corpo).forEach(function (x) { x.classList.remove("is-sel"); });
-            escolhido = t;
+            escolhido = t2;
           } else {
             escolhido = "";
           }
@@ -830,8 +900,8 @@
 
   // ==================================================================
   //  TELA "HISTÓRICO"
-  //  A mesma informação do quadro, em forma de tabela: serve para
-  //  conferir o caixa no fim do dia e para achar "aquele pedido".
+  //  Aqui a linha é o PEDIDO (e não a parte): quem confere caixa pensa
+  //  em venda, não em comanda. As partes aparecem numa coluna própria.
   // ==================================================================
   function montarHistorico(caixa) {
     histViva = true;
@@ -881,7 +951,31 @@
       .sort(function (a, b) { return (a.daily_number || 0) - (b.daily_number || 0); });
   }
 
-  // O resumo em uma linha de pílulas — o que o dono pergunta primeiro.
+  function nomeDoQuiosquePedido(p) {
+    if (p.quiosque && (p.quiosque.name || p.quiosque.number)) {
+      return p.quiosque.name || ("Quiosque " + p.quiosque.number);
+    }
+    var lista = (PL.catalogo && PL.catalogo.quiosques) || [];
+    for (var i = 0; i < lista.length; i++) {
+      if (lista[i].id === p.kiosk_id) return lista[i].name || ("Quiosque " + lista[i].number);
+    }
+    return "Quiosque ?";
+  }
+
+  // Quando o pedido terminou de verdade = quando a ÚLTIMA parte saiu.
+  function entregueEm(p) {
+    var partes = p.partes || [];
+    if (!partes.length) return null;
+    if (partes.some(function (t) { return !t.delivered_at; })) return null;
+    return partes.map(function (t) { return t.delivered_at; }).sort().pop();
+  }
+
+  function resumoDasPartes(p) {
+    return (p.partes || []).map(function (t) {
+      return PL.destinoDe(t.destination).rotulo + ": " + curtoStatus(t.status);
+    }).join(" · ") || "—";
+  }
+
   function desenharResumoDoDia(lista) {
     var el = PL.$("#hsResumo", caixaHist || document);
     if (!el) return;
@@ -891,7 +985,7 @@
       .reduce(function (s, p) { return s + (Number(p.total_cents) || 0); }, 0);
 
     var tempos = lista
-      .map(function (p) { return minutosEntre(p.created_at, p.delivered_at); })
+      .map(function (p) { return minutosEntre(p.created_at, entregueEm(p)); })
       .filter(function (m) { return m !== null; });
     var media = tempos.length
       ? Math.round(tempos.reduce(function (s, m) { return s + m; }, 0) / tempos.length)
@@ -901,12 +995,15 @@
       return p.status === "erro" || p.status === "cancelado";
     }).length;
 
+    var divididos = lista.filter(function (p) { return (p.partes || []).length > 1; }).length;
+
     el.innerHTML =
       '<span class="meta"><b>' + lista.length + "</b> " +
         (lista.length === 1 ? "pedido" : "pedidos") + "</span>" +
       '<span class="meta"><b>' + PL.dinheiro(faturado) + "</b> em pedidos válidos</span>" +
       '<span class="meta">entrega em média ' +
         (media === null ? "—" : "<b>" + PL.esc(PL.tempoCurto(media)) + "</b>") + "</span>" +
+      (divididos ? '<span class="meta">' + divididos + " dividido(s) em duas partes</span>" : "") +
       (errados
         ? '<span class="meta erro">' + errados +
           (errados === 1 ? " deu errado" : " deram errado") + "</span>"
@@ -914,7 +1011,8 @@
   }
 
   function resumoDosItens(p) {
-    var itens = p.itens || [];
+    var itens = [];
+    (p.partes || []).forEach(function (t) { itens = itens.concat(t.itens || []); });
     if (!itens.length) return "—";
     return itens.map(function (it) {
       return (Number(it.qty) || 1) + "× " + it.product_name;
@@ -935,16 +1033,17 @@
     }
 
     var linhas = lista.map(function (p) {
-      var gasto = minutosEntre(p.created_at, p.delivered_at);
+      var gasto = minutosEntre(p.created_at, entregueEm(p));
       var resumo = resumoDosItens(p);
       return "<tr>" +
         "<td><b>#" + PL.esc(p.daily_number) + "</b></td>" +
         "<td>" + PL.esc(PL.hora(p.created_at)) + "</td>" +
-        "<td>" + PL.esc(nomeDoQuiosque(p)) + "</td>" +
+        "<td>" + PL.esc(nomeDoQuiosquePedido(p)) + "</td>" +
         '<td title="' + PL.esc(resumo) + '">' + PL.esc(resumo) + "</td>" +
+        "<td>" + PL.esc(resumoDasPartes(p)) + "</td>" +
         '<td class="num">' + PL.dinheiro(p.total_cents) + "</td>" +
         '<td><span class="status-chip status-' + PL.esc(p.status) + '">' +
-          PL.esc((PL.STATUS[p.status] || {}).curto || p.status) + "</span></td>" +
+          PL.esc(curtoStatus(p.status)) + "</span></td>" +
         '<td class="num">' + (gasto === null ? "—" : PL.esc(PL.tempoCurto(gasto))) + "</td>" +
       "</tr>";
     }).join("");
@@ -952,7 +1051,7 @@
     alvo.innerHTML =
       '<table class="tabela">' +
         "<thead><tr>" +
-          "<th>Nº</th><th>Hora</th><th>Quiosque</th><th>Itens</th>" +
+          "<th>Nº</th><th>Hora</th><th>Quiosque</th><th>Itens</th><th>Partes</th>" +
           '<th class="num">Total</th><th>Situação</th><th class="num">Até entregar</th>' +
         "</tr></thead>" +
         "<tbody>" + linhas + "</tbody>" +
@@ -961,13 +1060,15 @@
 
   // ==================================================================
   //  EXPORTAR CSV
-  //  Feito à mão, sem biblioteca nenhuma: funciona no tablet mesmo com a
-  //  internet oscilando, porque o arquivo nasce dentro do navegador.
+  //  Feito à mão, sem biblioteca: funciona no tablet mesmo com a internet
+  //  oscilando, porque o arquivo nasce dentro do navegador.
   //  Padrão brasileiro: ponto-e-vírgula separando e vírgula no centavo —
   //  é o que o Excel em português espera ao abrir com dois cliques.
   // ==================================================================
   function campoCsv(valor) {
     var t = String(valor === null || valor === undefined ? "" : valor).replace(/\r?\n/g, " ");
+    // texto começando com = + - @ o Excel abriria como FÓRMULA
+    if (/^[=+\-@]/.test(t)) t = "'" + t;
     return /[";]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
   }
 
@@ -982,32 +1083,36 @@
     }
 
     var linhas = [[
-      "Nº", "Hora", "Quiosque", "Cliente", "Lugar", "Itens", "Qtd. itens",
+      "Nº", "Hora", "Quiosque", "Cliente", "Lugar", "Itens", "Qtd. itens", "Partes",
       "Total (R$)", "Situação", "Minutos até entregar", "Observação", "Motivo do erro",
     ]];
 
     lista.forEach(function (p) {
-      var gasto = minutosEntre(p.created_at, p.delivered_at);
+      var gasto = minutosEntre(p.created_at, entregueEm(p));
+      var motivos = (p.partes || [])
+        .map(function (t) { return t.error_reason; })
+        .filter(Boolean).join(" | ");
       linhas.push([
         p.daily_number,
         PL.hora(p.created_at),
-        nomeDoQuiosque(p),
+        nomeDoQuiosquePedido(p),
         p.customer_name || "",
         p.table_label || "",
         resumoDosItens(p),
-        quantosItens(p),
+        p.items_count || 0,
+        resumoDasPartes(p),
         dinheiroCsv(p.total_cents),
         rotuloStatus(p.status),
         gasto === null ? "" : gasto,
         p.notes || "",
-        p.error_reason || "",
+        motivos,
       ]);
     });
 
-    // O "\uFEFF" na frente é uma marca invisível que avisa o Excel de que
-    // o arquivo está em UTF-8. Sem ela, "Porção" abre escrito "PorÃ§Ã£o" e
-    // o dono acha que o sistema quebrou.
-    var texto = "\uFEFF" + linhas.map(function (l) {
+    // O "﻿" na frente é uma marca invisível que avisa o Excel de que o
+    // arquivo está em UTF-8. Sem ela, "Porção" abre escrito "PorÃ§Ã£o" e o
+    // dono acha que o sistema quebrou.
+    var texto = "﻿" + linhas.map(function (l) {
       return l.map(campoCsv).join(";");
     }).join("\r\n");
 
@@ -1032,18 +1137,27 @@
 
   // ==================================================================
   //  AVISOS DO NÚCLEO
-  //  Ficam fora das telas de propósito: o som do pedido novo tem que
-  //  tocar mesmo se a recepção estiver na aba do histórico.
+  //  Ficam fora das telas de propósito: o som tem que tocar mesmo se a
+  //  recepção estiver na aba do histórico ou mexendo no cardápio.
   // ==================================================================
   PL.ao("pedidos", function (dados) {
-    var chegaram = (dados && dados.chegaram) || [];
+    if (PL.ehEquipe()) {
+      var novasPartes = ((dados && dados.novas) || []).filter(function (t) {
+        return t.status === "recebido";
+      });
+      if (novasPartes.length) avisarChegada(novasPartes);
 
-    if (chegaram.length && PL.ehEquipe()) avisarChegada(chegaram);
+      // A cozinha terminou: é ESTE aviso que faz a recepção levantar.
+      var prontas = ((dados && dados.mudaram) || [])
+        .filter(function (m) {
+          return m.para === "pronto" && m.parte.destination === "cozinha" && m.de === "cozinha";
+        })
+        .map(function (m) { return m.parte; });
+      if (prontas.length) avisarProntoDaCozinha(prontas);
+    }
 
-    // Fora da tela de pedidos o selo do cabeçalho continua vivo: o admin
-    // mexendo no cardápio precisa ver que tem gente esperando.
     if (telaViva) desenharPedidos();
-    else if (PL.ehEquipe()) atualizarContadorDoTopo(contarAbertos().abertos);
+    else if (PL.ehEquipe()) atualizarContadorDoTopo(contarAbertos());
     if (histViva) desenharHistorico();
   });
 
@@ -1051,7 +1165,7 @@
     if (telaViva) atualizarRelogios();
   });
 
-  // Quiosque novo, ou quiosque renomeado, muda o texto dos cartões.
+  // Quiosque novo, ou renomeado, muda o texto dos cartões.
   PL.ao("catalogo", function () {
     if (telaViva) desenharPedidos();
     if (histViva) desenharHistorico();
@@ -1082,20 +1196,16 @@
       // ligado seria pisar no clique das outras abas
       if (caixaPedidos) caixaPedidos.removeEventListener("click", cliqueNaTela);
       caixaPedidos = null;
-      listaNaTela = [];
+      naTela = [];
       limparTemporizadores();
 
       // O selo do cabeçalho NÃO some ao sair desta aba — é justamente fora
       // dela que ele serve: o admin mexendo no cardápio precisa continuar
-      // vendo que tem pedido esperando. Só apagamos para o quiosque, que
-      // não tem nada a fazer com esse número.
-      if (PL.ehEquipe()) atualizarContadorDoTopo(contarAbertos().abertos);
+      // vendo que tem pedido esperando.
+      if (PL.ehEquipe()) atualizarContadorDoTopo(contarAbertos());
       else limparContadorDoTopo();
     },
 
-    // A engrenagem ⚙ da barra de cima, quando esta aba está aberta,
-    // configura ESTA aba. Quem sabe fazer isso é o admin.js — se ele
-    // ainda não estiver carregado, avisamos em vez de quebrar.
     engrenagem: function () {
       if (window.PLAdmin && typeof window.PLAdmin.configurarPedidos === "function") {
         window.PLAdmin.configurarPedidos();

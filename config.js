@@ -47,7 +47,7 @@ window.PEDIDOS_CONFIG = {
 
   // Sugestões que aparecem embaixo do campo de usuário, para o pessoal
   // não precisar decorar. Deixe [] para esconder.
-  atalhosLogin: ["recepcao", "adm"],
+  atalhosLogin: ["recepcao", "cozinha", "adm"],
 
   // ------------------------------------------------------------------
   //  TELA DO QUIOSQUE
@@ -83,6 +83,22 @@ window.PEDIDOS_CONFIG = {
     "Cliente desistiu",
     "Produto acabou",
   ],
+
+  // ------------------------------------------------------------------
+  //  TELA DA COZINHA
+  //  A cozinha só enxerga as comandas de comida, e só depois de a
+  //  recepção liberar. Ela tem um botão só: "Pronto".
+  // ------------------------------------------------------------------
+  cozinhaSom: true,           // toca quando uma comanda entra na cozinha
+  cozinhaLetraGrande: true,   // fonte maior: a tela fica longe, no calor
+  cozinhaProntasPorPerto: 6,  // quantas comandas já prontas continuam à mostra
+  cozinhaPodeVoltar: true,    // deixa desfazer um "pronto" apertado sem querer
+
+  // Semáforo da cozinha, em minutos, contando de quando a comanda entrou.
+  // Fica separado do SLA da recepção de propósito: a recepção conta desde
+  // que o quiosque pediu, a cozinha conta desde que recebeu.
+  cozinhaAtencao: 8,
+  cozinhaAtrasado: 18,
 
   // ------------------------------------------------------------------
   //  CONEXÃO COM O BANCO (Supabase)

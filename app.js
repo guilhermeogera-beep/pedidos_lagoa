@@ -110,6 +110,73 @@
   const ABERTOS = ["recebido", "cozinha", "pronto"];
   const FECHADOS = ["entregue", "erro", "cancelado"];
 
+  // ------------------------------------------------------------------
+  //  DESTINOS  (para onde vai cada parte do pedido)
+  //  Um pedido de "2 porções + 1 vara" vira DUAS partes: a comida espera
+  //  a cozinha, a vara sai na hora. Quem decide é a aba do produto —
+  //  o admin configura isso na engrenagem, sem mexer no código.
+  // ------------------------------------------------------------------
+  const DESTINOS = {
+    cozinha: {
+      rotulo: "Cozinha", curto: "Cozinha", icone: "👨‍🍳",
+      // recebido → cozinha → pronto → entregue
+      etapas: ["recebido", "cozinha", "pronto"],
+      explica: "Alguém precisa preparar. Passa pela tela da cozinha.",
+    },
+    balcao: {
+      rotulo: "Balcão", curto: "Balcão", icone: "🎣",
+      // recebido → pronto → entregue (nunca entra na cozinha)
+      etapas: ["recebido", "pronto"],
+      explica: "A recepção só separa e leva. Não passa pela cozinha.",
+    },
+  };
+
+  function destinoDe(chave) {
+    return DESTINOS[chave] || { rotulo: chave || "?", curto: chave || "?", icone: "📦", etapas: ABERTOS, explica: "" };
+  }
+
+  // Qual é o próximo passo de uma parte, conforme o destino dela.
+  // É daqui que saem os botões da recepção — nada de "se for pesca então…"
+  // espalhado pelas telas.
+  function proximoStatus(parte) {
+    const st = parte && parte.status;
+    if (parte && parte.destination === "balcao") {
+      if (st === "recebido") return "pronto";      // separou: já pode levar
+      if (st === "pronto")   return "entregue";
+      return null;
+    }
+    if (st === "recebido") return "cozinha";
+    if (st === "cozinha")  return "pronto";        // quem aperta é a COZINHA
+    if (st === "pronto")   return "entregue";
+    return null;
+  }
+
+  function statusAnterior(parte) {
+    const st = parte && parte.status;
+    if (parte && parte.destination === "balcao") {
+      if (st === "pronto")   return "recebido";
+      if (st === "entregue") return "pronto";
+      return null;
+    }
+    if (st === "cozinha")  return "recebido";
+    if (st === "pronto")   return "cozinha";
+    if (st === "entregue") return "pronto";
+    return null;
+  }
+
+  // Junta todas as partes de todos os pedidos numa lista só, cada uma
+  // carregando o cabeçalho do pedido a que pertence. É essa lista que o
+  // quadro da recepção e a tela da cozinha realmente desenham.
+  function achatarPartes(lista) {
+    const saida = [];
+    (lista || []).forEach((p) => {
+      (p.partes || []).forEach((t) => {
+        saida.push(Object.assign({}, t, { pedido: p }));
+      });
+    });
+    return saida;
+  }
+
   // Nomes que o app usa ⇄ nomes reais das tabelas no banco.
   // Ter um lugar só com essa tradução evita erro de digitação espalhado.
   const TABELAS = {
@@ -431,10 +498,16 @@
         return { secoes, categorias, produtos, dicas, quiosques };
       },
 
+      // Traz o pedido com as PARTES dentro, e os itens dentro de cada parte.
+      // Num round-trip só: o tablet da recepção pede isso a cada mudança, e
+      // três consultas separadas fariam a tela piscar fora de sincronia.
       async carregarPedidos(dia) {
         return ok(
           sb.from("orders")
-            .select("*, quiosque:kiosks(id,number,name), itens:order_items(*)")
+            .select(
+              "*, quiosque:kiosks(id,number,name)," +
+              "partes:order_tickets(*, itens:order_items(*))"
+            )
             .eq("service_date", dia)
             .order("created_at", { ascending: false })
         );
@@ -450,15 +523,23 @@
         }));
       },
 
-      async mudarStatus(id, status, motivo) {
+      // Empurra UMA parte (é o botão da recepção e o da cozinha)
+      async mudarStatusParte(parteId, status, motivo) {
+        return ok(sb.rpc("set_ticket_status", {
+          p_ticket_id: parteId, p_status: status, p_reason: motivo || null,
+        }));
+      },
+
+      // Mexe no pedido inteiro de uma vez (cancelar tudo, reabrir tudo)
+      async mudarStatusPedido(pedidoId, status, motivo) {
         return ok(sb.rpc("set_order_status", {
-          p_order_id: id, p_status: status, p_reason: motivo || null,
+          p_order_id: pedidoId, p_status: status, p_reason: motivo || null,
         }));
       },
 
       async marcarVistos(ids) {
         if (!ids || !ids.length) return 0;
-        return ok(sb.rpc("ack_orders", { p_ids: ids }));
+        return ok(sb.rpc("ack_tickets", { p_ids: ids }));
       },
 
       async disponibilidade(produtoId, disponivel) {
@@ -498,7 +579,7 @@
 
       escutar(aoMudarPedidos, aoMudarCatalogo) {
         const canal = sb.channel("pedidos-lagoa");
-        ["orders", "order_items"].forEach((t) =>
+        ["orders", "order_tickets", "order_items"].forEach((t) =>
           canal.on("postgres_changes", { event: "*", schema: "public", table: t }, aoMudarPedidos));
         ["products", "sections", "categories", "tips", "tenants", "kiosks"].forEach((t) =>
           canal.on("postgres_changes", { event: "*", schema: "public", table: t }, aoMudarCatalogo));
@@ -533,10 +614,11 @@
       QUIOSQUES.push({ id: "q" + i, tenant_id: CLIENTE.id, number: i, name: "Quiosque " + i, active: true, sort_order: i });
     }
 
+    // destination: 'cozinha' = alguém prepara | 'balcao' = a recepção separa e leva
     const SECOES = [
-      { id: "s1", tenant_id: CLIENTE.id, key: "comida", label: "Cardápio de Comida", icon: "🍽️", kind: "catalog", sort_order: 1, active: true },
-      { id: "s2", tenant_id: CLIENTE.id, key: "pesca",  label: "Cardápio de Pesca",  icon: "🎣", kind: "catalog", sort_order: 2, active: true },
-      { id: "s3", tenant_id: CLIENTE.id, key: "dicas",  label: "Dicas do Quiosque",  icon: "💡", kind: "tips",    sort_order: 3, active: true },
+      { id: "s1", tenant_id: CLIENTE.id, key: "comida", label: "Cardápio de Comida", icon: "🍽️", kind: "catalog", destination: "cozinha", sort_order: 1, active: true },
+      { id: "s2", tenant_id: CLIENTE.id, key: "pesca",  label: "Cardápio de Pesca",  icon: "🎣", kind: "catalog", destination: "balcao",  sort_order: 2, active: true },
+      { id: "s3", tenant_id: CLIENTE.id, key: "dicas",  label: "Dicas do Quiosque",  icon: "💡", kind: "tips",    destination: "balcao",  sort_order: 3, active: true },
     ];
 
     const CATS = [
@@ -580,6 +662,7 @@
     const PERFIS = {
       adm:      { role: "admin",    display_name: "Administrador", kiosk: null },
       recepcao: { role: "recepcao", display_name: "Recepção",      kiosk: null },
+      cozinha:  { role: "cozinha",  display_name: "Cozinha",       kiosk: null },
     };
     QUIOSQUES.forEach((q) => {
       PERFIS["quiosque" + q.number] = { role: "quiosque", display_name: q.name, kiosk: q };
@@ -620,6 +703,39 @@
 
     function novaId() { return "x" + Math.random().toString(36).slice(2, 10); }
 
+    // Os mesmos carimbos que o trigger tg_tickets_stamp faz no banco.
+    function aplicarStatusNaParte(parte, status, motivo) {
+      const agora = new Date().toISOString();
+      parte.status = status;
+      parte.updated_at = agora;
+      if (!parte.ack_at && status !== "recebido") parte.ack_at = agora;
+      if (status === "cozinha"  && !parte.kitchen_at)   parte.kitchen_at = agora;
+      if (status === "pronto"   && !parte.ready_at)     parte.ready_at = agora;
+      if (status === "entregue" && !parte.delivered_at) parte.delivered_at = agora;
+      if (FECHADOS.indexOf(status) >= 0) parte.closed_at = parte.closed_at || agora;
+      else parte.closed_at = null;
+      if (status === "erro" || status === "cancelado") parte.error_reason = motivo || null;
+    }
+
+    // O mesmo resumo que o trigger tg_tickets_resumo faz: manda a parte
+    // MENOS adiantada, porque é ela que o quiosque ainda está esperando.
+    function resumirPedido(pedido) {
+      const partes = pedido.partes || [];
+      const abertas = partes.filter((t) => ABERTOS.indexOf(t.status) >= 0);
+      if (abertas.length) {
+        abertas.sort((a, b) => ABERTOS.indexOf(a.status) - ABERTOS.indexOf(b.status));
+        pedido.status = abertas[0].status;
+        pedido.closed_at = null;
+      } else if (partes.length) {
+        pedido.status = partes.some((t) => t.status === "entregue") ? "entregue"
+          : partes.some((t) => t.status === "erro") ? "erro" : "cancelado";
+        pedido.closed_at = partes.map((t) => t.closed_at).filter(Boolean).sort().pop() || null;
+      }
+      pedido.items_count = partes.reduce((s, t) => s + (t.items_count || 0), 0);
+      pedido.total_cents = partes.reduce((s, t) => s + (t.total_cents || 0), 0);
+      pedido.updated_at = new Date().toISOString();
+    }
+
     return {
       tipo: "demo",
       sb: null,
@@ -629,7 +745,7 @@
       async entrar(email) {
         const login = String(email).split("@")[0].toLowerCase();
         if (!PERFIS[login]) {
-          throw new Error("No modo demonstração os usuários são: adm, recepcao e quiosque1 a quiosque17.");
+          throw new Error("No modo demonstração os usuários são: adm, recepcao, cozinha e quiosque1 a quiosque17.");
         }
         const b = ler(); b.login = login; gravar(b);
         return contexto(b);
@@ -643,13 +759,29 @@
                  dicas: b.dicas, quiosques: b.quiosques };
       },
 
+      // A mesma filtragem que a RLS faz no banco de verdade. Copiar essa
+      // regra aqui é chato, mas é o que garante que a demonstração não
+      // mostre à cozinha algo que no banco ela não veria.
       async carregarPedidos(dia) {
         const b = ler();
         const meu = contexto(b);
+        const papel = meu ? meu.perfil.role : null;
+
         let lista = b.pedidos.filter((p) => p.service_date === dia);
-        if (meu && meu.perfil.role === "quiosque") {
+
+        if (papel === "quiosque") {
           lista = lista.filter((p) => p.kiosk_id === meu.perfil.kiosk_id);
+        } else if (papel === "cozinha") {
+          // só as partes da cozinha, e só depois de a recepção liberar
+          lista = lista
+            .map((p) => Object.assign({}, p, {
+              partes: (p.partes || []).filter(
+                (t) => t.destination === "cozinha" && t.status !== "recebido"
+              ),
+            }))
+            .filter((p) => p.partes.length);
         }
+
         return lista.sort((a, x) => new Date(x.created_at) - new Date(a.created_at));
       },
 
@@ -662,58 +794,122 @@
 
         const dia = hojeNoFuso(b.cliente.timezone);
         const doDia = b.pedidos.filter((x) => x.service_date === dia);
-        const itens = (p.itens || []).map((it) => {
+        const agora = new Date().toISOString();
+        const pedidoId = novaId();
+
+        // Agrupa os itens pelo DESTINO da aba: é a divisão do pedido em partes.
+        const porDestino = {};
+        (p.itens || []).forEach((it) => {
           const prod = b.produtos.find((x) => x.id === it.product_id);
           if (!prod) throw new Error("Produto não encontrado.");
+          if (prod.available === false || prod.active === false) {
+            throw new Error("O item " + prod.name + " saiu do cardápio.");
+          }
+          const secao = b.secoes.find((s) => s.id === prod.section_id) || {};
+          const destino = secao.destination || "cozinha";
           const qtd = Math.max(1, Number(it.qty) || 1);
-          return {
-            id: novaId(), product_id: prod.id, product_name: prod.name,
-            section_key: (b.secoes.find((s) => s.id === prod.section_id) || {}).key,
+
+          (porDestino[destino] = porDestino[destino] || []).push({
+            id: novaId(), order_id: pedidoId, product_id: prod.id, product_name: prod.name,
+            section_key: secao.key, destination: destino,
             unit_price_cents: prod.price_cents, qty: qtd,
             line_total_cents: prod.price_cents * qtd, notes: it.notes || null,
+          });
+        });
+
+        const destinos = Object.keys(porDestino);
+        if (!destinos.length) throw new Error("Pedido sem itens.");
+
+        const partes = destinos.map((d) => {
+          const itens = porDestino[d];
+          const parteId = novaId();
+          itens.forEach((i) => { i.ticket_id = parteId; });
+          return {
+            id: parteId, order_id: pedidoId, tenant_id: b.cliente.id, kiosk_id: q.id,
+            destination: d, status: "recebido",
+            items_count: itens.reduce((s, i) => s + i.qty, 0),
+            total_cents: itens.reduce((s, i) => s + i.line_total_cents, 0),
+            created_at: agora, updated_at: agora,
+            ack_at: null, kitchen_at: null, ready_at: null, delivered_at: null,
+            closed_at: null, error_reason: null,
+            itens: itens,
           };
         });
-        if (!itens.length) throw new Error("Pedido sem itens.");
 
         const pedido = {
-          id: novaId(), tenant_id: b.cliente.id, kiosk_id: q.id,
+          id: pedidoId, tenant_id: b.cliente.id, kiosk_id: q.id,
           daily_number: doDia.length + 1, service_date: dia, status: "recebido",
           customer_name: p.cliente || null, table_label: p.lugar || null, notes: p.observacao || null,
-          items_count: itens.reduce((s, i) => s + i.qty, 0),
-          total_cents: itens.reduce((s, i) => s + i.line_total_cents, 0),
-          created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-          ack_at: null, kitchen_at: null, ready_at: null, delivered_at: null, error_reason: null,
+          items_count: partes.reduce((s, t) => s + t.items_count, 0),
+          total_cents: partes.reduce((s, t) => s + t.total_cents, 0),
+          created_at: agora, updated_at: agora, closed_at: null,
           quiosque: { id: q.id, number: q.number, name: q.name },
-          itens: itens,
+          partes: partes,
         };
+
         b.pedidos.push(pedido);
         gravar(b);
         if (avisar) setTimeout(avisar, 30);
         return pedido;
       },
 
-      async mudarStatus(id, status, motivo) {
+      // Empurra UMA parte. As mesmas travas do banco valem aqui.
+      async mudarStatusParte(parteId, status, motivo) {
         const b = ler();
-        const p = b.pedidos.find((x) => x.id === id);
-        if (!p) throw new Error("Pedido não encontrado.");
-        const agora = new Date().toISOString();
-        p.status = status;
-        p.updated_at = agora;
-        if (!p.ack_at && status !== "recebido") p.ack_at = agora;
-        if (status === "cozinha"  && !p.kitchen_at)   p.kitchen_at = agora;
-        if (status === "pronto"   && !p.ready_at)     p.ready_at = agora;
-        if (status === "entregue" && !p.delivered_at) p.delivered_at = agora;
-        if (status === "erro" || status === "cancelado") p.error_reason = motivo || null;
+        const meu = contexto(b);
+        let pedido = null, parte = null;
+        b.pedidos.forEach((p) => {
+          (p.partes || []).forEach((t) => { if (t.id === parteId) { pedido = p; parte = t; } });
+        });
+        if (!parte) throw new Error("Parte do pedido não encontrada.");
+
+        if ((status === "erro" || status === "cancelado") && !String(motivo || "").trim()) {
+          throw new Error("Informe o motivo.");
+        }
+        if (parte.destination === "balcao" && status === "cozinha") {
+          throw new Error("Esta parte é separada no balcão — ela não passa pela cozinha.");
+        }
+        if (meu && meu.perfil.role === "cozinha") {
+          if (parte.destination !== "cozinha") throw new Error("Esta parte não é da cozinha.");
+          if (["cozinha", "pronto"].indexOf(status) < 0) {
+            throw new Error('A cozinha só marca "pronto" ou volta para "preparando". Fale com a recepção.');
+          }
+        }
+        if (meu && meu.perfil.role === "quiosque" && parte.status !== "recebido") {
+          throw new Error("A cozinha já pegou este pedido. Fale com a recepção.");
+        }
+
+        aplicarStatusNaParte(parte, status, motivo);
+        resumirPedido(pedido);
         gravar(b);
         if (avisar) setTimeout(avisar, 30);
-        return p;
+        return parte;
+      },
+
+      // Mexe no pedido inteiro (cancelar tudo, reabrir tudo)
+      async mudarStatusPedido(pedidoId, status, motivo) {
+        const b = ler();
+        const p = b.pedidos.find((x) => x.id === pedidoId);
+        if (!p) throw new Error("Pedido não encontrado.");
+        if (status === "cozinha") throw new Error("Mandar para a cozinha é parte por parte.");
+        if ((status === "erro" || status === "cancelado") && !String(motivo || "").trim()) {
+          throw new Error("Informe o motivo.");
+        }
+        (p.partes || []).forEach((t) => aplicarStatusNaParte(t, status, motivo));
+        resumirPedido(p);
+        gravar(b);
+        if (avisar) setTimeout(avisar, 30);
+        return (p.partes || []).length;
       },
 
       async marcarVistos(ids) {
         const b = ler();
-        (ids || []).forEach((id) => {
-          const p = b.pedidos.find((x) => x.id === id);
-          if (p && !p.ack_at) p.ack_at = new Date().toISOString();
+        const alvo = {};
+        (ids || []).forEach((id) => { alvo[id] = true; });
+        b.pedidos.forEach((p) => {
+          (p.partes || []).forEach((t) => {
+            if (alvo[t.id] && !t.ack_at) t.ack_at = new Date().toISOString();
+          });
         });
         gravar(b);
         return (ids || []).length;
@@ -829,7 +1025,7 @@
     const rodape = $("#loginRodape");
     if (rodape) {
       rodape.innerHTML = backend.tipo === "demo"
-        ? "<b>Modo demonstração.</b> Entre com <b>adm</b>, <b>recepcao</b> ou <b>quiosque1</b>…<b>quiosque17</b> — a senha pode ser qualquer coisa. Os dados ficam só neste aparelho."
+        ? "<b>Modo demonstração.</b> Entre com <b>adm</b>, <b>recepcao</b>, <b>cozinha</b> ou <b>quiosque1</b>…<b>quiosque17</b> — a senha pode ser qualquer coisa. Os dados ficam só neste aparelho."
         : "Esqueceu a senha? Peça para o administrador rodar o <b>06-usuarios.sql</b> de novo com a senha nova.";
     }
 
@@ -949,22 +1145,36 @@
   }
 
   let primeiraCargaDePedidos = true;
+  let statusAnteriorDasPartes = {};   // id da parte -> status da última carga
 
   async function recarregarPedidos() {
     const dia = hojeNoFuso(ctx && ctx.cliente ? ctx.cliente.timezone : null);
     const novos = await backend.carregarPedidos(dia);
+    const partes = achatarPartes(novos);
 
-    // Descobre se chegou pedido NOVO (para tocar o aviso na recepção).
-    // Na PRIMEIRA carga ninguém "chegou": senão o tablet tocaria o alarme
-    // para a fila inteira só por ter sido ligado de manhã.
-    const antes = new Set(pedidos.map((p) => p.id));
-    const chegaram = primeiraCargaDePedidos
-      ? []
-      : novos.filter((p) => !antes.has(p.id) && p.status === "recebido");
+    // Quem precisa ser avisado muda conforme a tela: a recepção quer saber
+    // que CHEGOU pedido e que a cozinha marcou PRONTO; a cozinha quer saber
+    // que uma comanda entrou. Então o núcleo não decide nada — só conta o
+    // que mudou desde a última carga, e cada tela filtra o que lhe importa.
+    //
+    // Na PRIMEIRA carga nada "chegou": senão o tablet tocaria o alarme para
+    // a fila inteira só por ter sido ligado de manhã.
+    const novas = [];
+    const mudaram = [];
+    if (!primeiraCargaDePedidos) {
+      partes.forEach((t) => {
+        const antes = statusAnteriorDasPartes[t.id];
+        if (antes === undefined) novas.push(t);
+        else if (antes !== t.status) mudaram.push({ parte: t, de: antes, para: t.status });
+      });
+    }
     primeiraCargaDePedidos = false;
 
+    statusAnteriorDasPartes = {};
+    partes.forEach((t) => { statusAnteriorDasPartes[t.id] = t.status; });
+
     pedidos = novos;
-    emitir("pedidos", { pedidos, chegaram });
+    emitir("pedidos", { pedidos, partes, novas, mudaram });
     return pedidos;
   }
 
@@ -1011,8 +1221,13 @@
   function papel()      { return ctx && ctx.perfil ? ctx.perfil.role : null; }
   function ehAdmin()    { return papel() === "admin"; }
   function ehRecepcao() { return papel() === "recepcao"; }
+  function ehCozinha()  { return papel() === "cozinha"; }
   function ehQuiosque() { return papel() === "quiosque"; }
+  // "equipe" = quem manda no quadro inteiro (admin + recepção). A cozinha
+  // de propósito fica de fora: ela vê só as comandas dela.
   function ehEquipe()   { return ehAdmin() || ehRecepcao(); }
+  // "da casa" = todo mundo que trabalha aqui, incluindo a cozinha
+  function ehDaCasa()   { return ehAdmin() || ehRecepcao() || ehCozinha(); }
 
   // ==================================================================
   //  ABRIR O APP (depois do login)
@@ -1080,7 +1295,7 @@
   }
 
   function rotuloPapel(r) {
-    return { admin: "Administrador", recepcao: "Recepção", quiosque: "Quiosque" }[r] || r;
+    return { admin: "Administrador", recepcao: "Recepção", cozinha: "Cozinha", quiosque: "Quiosque" }[r] || r;
   }
 
   // ==================================================================
@@ -1128,21 +1343,25 @@
   //  O QUE AS TELAS PODEM USAR
   // ==================================================================
   const PL = {
-    VERSAO, CFG, STATUS, ABERTOS, FECHADOS, TABELAS,
+    VERSAO, CFG, STATUS, ABERTOS, FECHADOS, TABELAS, DESTINOS,
 
     // atalhos
     $, $$, esc, dinheiro, minutosDesde, tempoCurto, hora, hojeNoFuso, aguarde, adiar,
+
+    // partes do pedido
+    destinoDe, proximoStatus, statusAnterior, achatarPartes,
 
     // avisos e pop-ups
     aviso, modal, confirmar, erroLegivel, tocarAviso, vibrar,
 
     // quem sou eu
     get ctx() { return ctx; },
-    papel, ehAdmin, ehRecepcao, ehQuiosque, ehEquipe,
+    papel, ehAdmin, ehRecepcao, ehCozinha, ehQuiosque, ehEquipe, ehDaCasa,
 
     // dados
     get catalogo() { return catalogo; },
     get pedidos() { return pedidos; },
+    get partes() { return achatarPartes(pedidos); },
     recarregarCatalogo, recarregarPedidos,
     get backend() { return backend; },
     set backend(b) { backend = b; },

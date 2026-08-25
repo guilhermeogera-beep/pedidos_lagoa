@@ -464,6 +464,90 @@ img{max-width:100%}
 }
 
 /* ============================================================
+   DESTINO DA PARTE  (cozinha × balcão)
+   ------------------------------------------------------------
+   Um pedido de comida + isca vira dois cartões. Sem uma marca
+   clara, a recepção olharia dois cartões "#12" e acharia que o
+   sistema duplicou o pedido. Por isso a etiqueta é grande e a
+   borda de cima muda de cor.
+   ============================================================ */
+.destino-chip{
+  display:inline-flex;align-items:center;gap:5px;
+  border-radius:999px;padding:3px 10px;font-size:.74rem;font-weight:800;
+  text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;
+}
+.destino-cozinha{background:#FDEBD3;color:#8A4B00}
+.destino-balcao {background:#DDEBF7;color:#14507F}
+
+.pedido[data-destino="cozinha"]{border-top:4px solid #E08A17}
+.pedido[data-destino="balcao"] {border-top:4px solid #2E7CC4}
+/* pedido dividido: um lembrete discreto de que existe outra metade */
+.tem-irma{
+  font-size:.76rem;color:var(--muted);font-weight:600;
+  display:flex;align-items:center;gap:6px;
+}
+.tem-irma b{color:var(--brand-dark)}
+
+/* ============================================================
+   TELA DA COZINHA
+   ------------------------------------------------------------
+   Feita para ser lida de longe, de pé, com o vapor na frente:
+   cartão grande, poucos elementos, um botão só.
+   ============================================================ */
+.comandas{
+  display:grid;gap:16px;align-items:start;
+  grid-template-columns:repeat(auto-fill,minmax(310px,1fr));
+}
+.comanda{
+  background:var(--card);border:1px solid var(--line);border-left:8px solid var(--st-cozinha);
+  border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;
+  display:flex;flex-direction:column;gap:12px;animation:pop .28s ease;
+}
+.comanda.pronta{border-left-color:var(--st-pronto);opacity:.78}
+.comanda.atencao{border-left-color:var(--warn)}
+.comanda.atrasada{border-left-color:var(--danger);animation:pop .28s ease, pisca 1.6s ease-in-out infinite}
+.comanda.nova{box-shadow:0 0 0 4px var(--accent),var(--shadow)}
+
+.comanda-topo{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.comanda-quem{display:flex;flex-direction:column;line-height:1.15;min-width:0}
+.comanda-quem b{font-size:1.5rem;color:var(--brand-dark)}
+.comanda-quem span{font-size:.85rem;color:var(--muted);font-weight:700}
+.comanda-tempo{
+  border-radius:12px;padding:8px 14px;font-weight:800;font-size:1.15rem;white-space:nowrap;
+  background:var(--ok-soft);color:var(--ok);text-align:center;line-height:1.15;
+}
+.comanda-tempo small{display:block;font-size:.66rem;font-weight:700;opacity:.75;text-transform:uppercase}
+.comanda-tempo.atencao{background:var(--warn-soft);color:var(--warn)}
+.comanda-tempo.atrasada{background:var(--danger-soft);color:var(--danger)}
+
+.comanda-itens{display:flex;flex-direction:column;gap:9px}
+.ci-linha{display:flex;gap:12px;align-items:baseline;line-height:1.3}
+.ci-linha .q{
+  background:var(--brand);color:#fff;border-radius:9px;padding:3px 11px;
+  font-weight:800;font-size:1.15rem;flex:0 0 auto;min-width:44px;text-align:center;
+}
+.ci-linha .n{font-size:1.2rem;font-weight:700;flex:1;min-width:0}
+.ci-linha .obs{
+  display:block;font-size:1rem;font-weight:700;color:#8A4B00;
+  background:var(--warn-soft);border-radius:8px;padding:3px 9px;margin-top:5px;
+}
+.comanda-obs{
+  background:var(--warn-soft);color:#7a4a00;border-radius:12px;padding:10px 14px;
+  font-weight:700;font-size:1rem;line-height:1.4;
+}
+.comanda-pe{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.comanda-pe .btn{flex:1;min-height:58px;font-size:1.15rem}
+.comanda-pe .btn-sm{flex:0 0 auto;min-height:44px;font-size:.9rem}
+
+/* letra grande: a tela da cozinha costuma ficar longe de quem cozinha */
+.cozinha-grande .comanda-quem b{font-size:1.9rem}
+.cozinha-grande .ci-linha .q{font-size:1.4rem;padding:4px 13px;min-width:52px}
+.cozinha-grande .ci-linha .n{font-size:1.5rem}
+.cozinha-grande .ci-linha .obs{font-size:1.15rem}
+.cozinha-grande .comanda-tempo{font-size:1.35rem}
+.cozinha-grande .comanda-pe .btn{min-height:66px;font-size:1.3rem}
+
+/* ============================================================
    TABELAS (relatórios e listas do admin)
    ============================================================ */
 .tabela-rolagem{overflow-x:auto;-webkit-overflow-scrolling:touch}

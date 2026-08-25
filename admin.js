@@ -820,6 +820,22 @@ window.PLAdmin = window.PLAdmin || {};
           <span class="field-hint">Número menor aparece antes.</span>
         </label>
       </div>
+      ${s.kind === "tips" ? "" : `
+      <label class="field">
+        <span>Para onde vai o que for pedido aqui</span>
+        <select id="sDestino">
+          <option value="cozinha"${(s.destination || "cozinha") === "cozinha" ? " selected" : ""}>
+            👨‍🍳 Cozinha — alguém precisa preparar
+          </option>
+          <option value="balcao"${s.destination === "balcao" ? " selected" : ""}>
+            🎣 Balcão — a recepção só separa e leva
+          </option>
+        </select>
+        <span class="field-hint">
+          É isto que divide o pedido em partes. Mudar aqui vale só para os
+          <b>próximos</b> pedidos — os que já estão no quadro continuam onde estão.
+        </span>
+      </label>`}
       <label class="switch">
         <input type="checkbox" id="sAtiva"${s.active ? " checked" : ""} />
         <span class="trilho"></span>
@@ -840,13 +856,16 @@ window.PLAdmin = window.PLAdmin || {};
       if (!rotulo) { PL.aviso("Escreva o nome da aba.", "avisa"); return; }
       botao.disabled = true;
       await tentar(async function () {
-        await PL.backend.salvar("secoes", {
+        var linha = {
           id: s.id,
           label: rotulo,
           icon: val(caixa, "sIcone"),
           active: marcado(caixa, "sAtiva"),
           sort_order: Number(val(caixa, "sOrdem")) || 0,
-        });
+        };
+        // aba de conteúdo não tem destino: o campo nem foi desenhado
+        if (s.kind !== "tips") linha.destination = val(caixa, "sDestino") || "cozinha";
+        await PL.backend.salvar("secoes", linha);
         await PL.recarregarCatalogo();
       }, "Salvo!");
       botao.disabled = false;
@@ -902,6 +921,65 @@ window.PLAdmin = window.PLAdmin || {};
         var campos = { sla_warn_minutes: atencao, sla_late_minutes: atraso };
         await PL.backend.salvarCliente(campos);
         atualizarClienteNaMemoria(campos);
+        PL.recarregarTela();
+      },
+    });
+  }
+
+  // ==================================================================
+  //  CONFIGURAR A TELA DA COZINHA   (o ⚙ da aba da cozinha)
+  //  Estes números ficam em tenants.settings (na nuvem), e não no
+  //  config.js: assim o dono muda pelo tablet, e vale para todos os
+  //  aparelhos de uma vez.
+  // ==================================================================
+  function ajustesDaCozinha() {
+    var s = (PL.ctx && PL.ctx.cliente && PL.ctx.cliente.settings) || {};
+    return {
+      atencao: Number(s.cozinhaAtencao) || Number(PL.CFG.cozinhaAtencao) || 8,
+      atrasado: Number(s.cozinhaAtrasado) || Number(PL.CFG.cozinhaAtrasado) || 18,
+    };
+  }
+
+  function configurarCozinha() {
+    var a = ajustesDaCozinha();
+    abrirFormulario({
+      titulo: "Ajustes da tela da cozinha",
+      textoSalvar: "Salvar",
+      corpo: `
+        <p class="hint" style="margin:0;line-height:1.6">
+          O relógio da comanda conta de quando ela <b>entrou na cozinha</b> — e não de
+          quando o quiosque pediu. É de propósito: a cozinha não tem culpa do tempo que
+          o pedido ficou esperando a recepção liberar.
+        </p>
+        <div class="field-row">
+          <label class="field">
+            <span>Minutos para “atenção”</span>
+            <input type="number" id="czAtencao" min="1" max="180" step="1" value="${esc(a.atencao)}" />
+            <span class="field-hint">Passou disso, a comanda fica <b>âmbar</b>.</span>
+          </label>
+          <label class="field">
+            <span>Minutos para “atrasado”</span>
+            <input type="number" id="czAtraso" min="2" max="240" step="1" value="${esc(a.atrasado)}" />
+            <span class="field-hint">Passou disso, fica <b>vermelha e pisca</b>.</span>
+          </label>
+        </div>
+        <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
+          <div>
+            Estes números são só da cozinha. O semáforo da recepção é outro, e conta desde
+            que o quiosque pediu — ajuste dele fica no ⚙ da aba <b>Pedidos</b>.
+          </div>
+        </div>`,
+      aoSalvar: async function (corpo) {
+        var atencao = Number(val(corpo, "czAtencao")) || 0;
+        var atraso = Number(val(corpo, "czAtraso")) || 0;
+        if (atencao < 1 || atraso < 1) { PL.aviso("Os dois números precisam ser pelo menos 1 minuto.", "avisa"); return false; }
+        if (atraso <= atencao) { PL.aviso("O “atrasado” precisa ser maior que o “atenção”.", "avisa"); return false; }
+
+        // settings é um campo livre: preservamos o que já estiver lá dentro
+        var atual = (PL.ctx && PL.ctx.cliente && PL.ctx.cliente.settings) || {};
+        var novo = Object.assign({}, atual, { cozinhaAtencao: atencao, cozinhaAtrasado: atraso });
+        await PL.backend.salvarCliente({ settings: novo });
+        atualizarClienteNaMemoria({ settings: novo });
         PL.recarregarTela();
       },
     });
@@ -1056,10 +1134,16 @@ window.PLAdmin = window.PLAdmin || {};
         var quantos = s.kind === "tips"
           ? PL.catalogo.dicas.filter(function (d) { return d.section_id === s.id; }).length + " dica(s)"
           : PL.catalogo.produtos.filter(function (p) { return p.section_id === s.id; }).length + " produto(s)";
+        // O destino é o que decide a divisão do pedido — merece ficar à vista
+        // na lista, e não escondido dentro do editar.
+        var destino = s.kind === "tips" ? "" :
+          (s.destination === "balcao"
+            ? ' · <span class="destino-chip destino-balcao">🎣 Balcão</span>'
+            : ' · <span class="destino-chip destino-cozinha">👨‍🍳 Cozinha</span>');
         return linhaEdit({
           id: s.id,
           inativo: !s.active,
-          nome: `${s.icon ? esc(s.icon) + " " : ""}${esc(s.label)}`,
+          nome: `${s.icon ? esc(s.icon) + " " : ""}${esc(s.label)}${destino}`,
           sub: `${quantos} · chave: ${esc(s.key)}${s.active ? "" : " · desligada"}`,
           reordena: true,
           chaveSwitch: "ativa",
@@ -1150,6 +1234,21 @@ window.PLAdmin = window.PLAdmin || {};
             <span class="field-hint">O tipo não muda depois de criada.</span>
           </label>`}
         </div>
+        <label class="field" id="nsCampoDestino">
+          <span>Para onde vai o que for pedido aqui</span>
+          <select id="nsDestino">
+            <option value="cozinha"${(s.destination || "cozinha") === "cozinha" ? " selected" : ""}>
+              👨‍🍳 Cozinha — alguém precisa preparar
+            </option>
+            <option value="balcao"${s.destination === "balcao" ? " selected" : ""}>
+              🎣 Balcão — a recepção só separa e leva
+            </option>
+          </select>
+          <span class="field-hint">
+            É isto que divide o pedido: comida e isca pedidos juntos viram duas partes,
+            uma esperando a cozinha e a outra saindo na hora.
+          </span>
+        </label>
         <label class="switch">
           <input type="checkbox" id="nsAtiva"${novo || s.active ? " checked" : ""} />
           <span class="trilho"></span>
@@ -1166,13 +1265,24 @@ window.PLAdmin = window.PLAdmin || {};
           </div>
         </div>`,
       aoAbrir: function (corpo) {
+        // Aba de conteúdo (dicas) não gera pedido nenhum, então perguntar
+        // "para onde vai" só confundiria. O campo some.
+        function ajustarDestino() {
+          var tipo = novo ? (val(corpo, "nsTipo") || "catalog") : s.kind;
+          var campo = PL.$("#nsCampoDestino", corpo);
+          if (campo) campo.hidden = tipo === "tips";
+        }
+        var selTipo = PL.$("#nsTipo", corpo);
+        if (selTipo) selTipo.onchange = ajustarDestino;
+        ajustarDestino();
+
         if (!novo) return;
         // mostra a chave que vai ser criada enquanto a pessoa digita o nome:
         // é mais fácil aceitar uma regra quando dá para ver o resultado
-        var campo = PL.$("#nsLabel", corpo);
+        var campoNome = PL.$("#nsLabel", corpo);
         var aviso = PL.$("#nsAvisoChave", corpo);
-        campo.oninput = function () {
-          aviso.innerHTML = `A chave desta aba vai ser <b>${esc(chaveDoTexto(campo.value))}</b>.
+        campoNome.oninput = function () {
+          aviso.innerHTML = `A chave desta aba vai ser <b>${esc(chaveDoTexto(campoNome.value))}</b>.
             Ela vai gravada em cada item vendido e <b>não deve mudar depois</b>.`;
         };
       },
@@ -1180,7 +1290,12 @@ window.PLAdmin = window.PLAdmin || {};
         var rotulo = val(corpo, "nsLabel");
         if (!rotulo) { PL.aviso("Escreva o nome da aba.", "avisa"); return false; }
 
-        var linha = { label: rotulo, icon: val(corpo, "nsIcone"), active: marcado(corpo, "nsAtiva") };
+        var linha = {
+          label: rotulo,
+          icon: val(corpo, "nsIcone"),
+          active: marcado(corpo, "nsAtiva"),
+          destination: val(corpo, "nsDestino") || "cozinha",
+        };
         if (novo) {
           linha.key = chaveDoTexto(rotulo);
           linha.kind = val(corpo, "nsTipo") || "catalog";
@@ -1712,8 +1827,17 @@ window.PLAdmin = window.PLAdmin || {};
     d.errados = pedidos.length - valem.length;
     d.faturamento = valem.reduce(function (s, p) { return s + Number(p.total_cents || 0); }, 0);
     d.itens = valem.reduce(function (s, p) { return s + Number(p.items_count || 0); }, 0);
-    d.minCozinha = media(pedidos.map(function (p) { return minutosEntre(p.created_at, p.kitchen_at); }));
-    d.minEntrega = media(pedidos.map(function (p) { return minutosEntre(p.created_at, p.delivered_at); }));
+    // Os horários vivem nas PARTES, não no pedido: a comida entra na
+    // cozinha, a isca nunca entra. Então a média "até a cozinha" olha só as
+    // partes de cozinha, e a "até a entrega" só conta quando TUDO saiu.
+    d.minCozinha = media(pedidos.map(function (p) {
+      var entrou = (p.partes || [])
+        .filter(function (t) { return t.destination === "cozinha" && t.kitchen_at; })
+        .map(function (t) { return t.kitchen_at; })
+        .sort()[0];
+      return minutosEntre(p.created_at, entrou);
+    }));
+    d.minEntrega = media(pedidos.map(function (p) { return minutosEntre(p.created_at, entregueEm(p)); }));
 
     var porQ = {};
     pedidos.forEach(function (p) {
@@ -1730,7 +1854,7 @@ window.PLAdmin = window.PLAdmin || {};
         linha.itens += Number(p.items_count || 0);
         linha.total_cents += Number(p.total_cents || 0);
       }
-      var t = minutosEntre(p.created_at, p.delivered_at);
+      var t = minutosEntre(p.created_at, entregueEm(p));
       if (t !== null) linha.tempos.push(t);
     });
     d.porQuiosque = Object.keys(porQ).map(function (k) {
@@ -1742,13 +1866,16 @@ window.PLAdmin = window.PLAdmin || {};
 
     var porProduto = {};
     valem.forEach(function (p) {
-      (p.itens || []).forEach(function (i) {
-        var chave = i.product_name || "?";
-        var l = porProduto[chave] || (porProduto[chave] = {
-          produto: chave, aba: i.section_key || "", quantidade: 0, total_cents: 0,
+      // os itens moram dentro das partes desde que a cozinha entrou no jogo
+      (p.partes || []).forEach(function (t) {
+        (t.itens || []).forEach(function (i) {
+          var chave = i.product_name || "?";
+          var l = porProduto[chave] || (porProduto[chave] = {
+            produto: chave, aba: i.section_key || "", quantidade: 0, total_cents: 0,
+          });
+          l.quantidade += Number(i.qty || 0);
+          l.total_cents += Number(i.line_total_cents || 0);
         });
-        l.quantidade += Number(i.qty || 0);
-        l.total_cents += Number(i.line_total_cents || 0);
       });
     });
     d.mais = Object.keys(porProduto).map(function (k) { return porProduto[k]; })
@@ -1761,6 +1888,16 @@ window.PLAdmin = window.PLAdmin || {};
     if (!inicio || !fim) return null;
     var m = (new Date(fim).getTime() - new Date(inicio).getTime()) / 60000;
     return isFinite(m) && m >= 0 ? m : null;
+  }
+
+  // Um pedido só está entregue quando a ÚLTIMA parte saiu. Se a comida foi
+  // e a isca ficou no balcão, o pedido não terminou — e contar o tempo da
+  // metade que saiu daria uma média bonita e mentirosa.
+  function entregueEm(p) {
+    var partes = p.partes || [];
+    if (!partes.length) return null;
+    if (partes.some(function (t) { return !t.delivered_at; })) return null;
+    return partes.map(function (t) { return t.delivered_at; }).sort().pop();
   }
 
   // Média que ignora o que não aconteceu (null): um pedido que ainda não foi
@@ -1888,6 +2025,7 @@ window.PLAdmin = window.PLAdmin || {};
   // ==================================================================
   window.PLAdmin.configurarSecao = configurarSecao;
   window.PLAdmin.configurarPedidos = configurarPedidos;
+  window.PLAdmin.configurarCozinha = configurarCozinha;
   window.PLAdmin.configurarGeral = configurarGeral;
 
   // O 🛠 da barra de cima só avisa; quem sabe o que fazer é este arquivo.

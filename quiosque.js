@@ -914,7 +914,12 @@
   // segurança do núcleo bate a cada 45 s e faria os cartões piscarem
   // (a animação de "pedido novo") sem motivo nenhum.
   function assinatura(lista) {
-    return lista.map(function (p) { return p.id + ":" + p.status + ":" + p.updated_at; }).join("|");
+    return lista.map(function (p) {
+      // as partes entram na conta: a comida pode ficar pronta enquanto o
+      // resumo do pedido continua "na cozinha" por causa da outra metade
+      var partes = (p.partes || []).map(function (t) { return t.id + "=" + t.status; }).join(",");
+      return p.id + ":" + p.status + ":" + p.updated_at + ":" + partes;
+    }).join("|");
   }
 
   function desenharMeusPedidos(forcar) {
@@ -947,31 +952,43 @@
       "</div>";
   }
 
+  // O quiosque pediu UMA vez, então enxerga UM cartão — mas dentro dele
+  // aparecem as partes, cada uma no seu andamento. Sem isso, o garçom veria
+  // "na cozinha" e acharia que a isca também estava presa lá.
   function cartaoPedido(p) {
     var aberto = PL.ABERTOS.indexOf(p.status) >= 0;
     var min = PL.minutosDesde(p.created_at);
     var st = PL.STATUS[p.status] || { rotulo: p.status, icone: "" };
-    var itens = p.itens || [];   // o banco pode devolver o pedido sem os itens
+    var partes = p.partes || [];   // o banco pode devolver o pedido sem elas
     // items_count vem do banco; passa por Number para nunca virar texto solto
     // dentro do HTML (e porque o pedido pode chegar antes de a conta fechar).
-    var qtdItens = Number(p.items_count || itens.length) || 0;
+    var qtdItens = Number(p.items_count) || 0;
+
+    // Quando tudo fechou, o que interessa é a hora em que a ÚLTIMA parte saiu.
+    var saiuEm = partes.map(function (t) { return t.delivered_at; }).filter(Boolean).sort().pop();
 
     var tempo = aberto
       ? '<span class="pedido-tempo ' + classeTempo(min) + '" data-criado="' + PL.esc(p.created_at) + '">' +
         PL.tempoCurto(min) + "</span>"
       : '<span class="pedido-tempo' + (p.status === "entregue" ? "" : " atrasado") + '">' +
-        PL.hora(p.delivered_at || p.updated_at || p.created_at) + "</span>";
+        PL.hora(saiuEm || p.updated_at || p.created_at) + "</span>";
+
+    var motivos = partes.map(function (t) { return t.error_reason; }).filter(Boolean).join(" · ");
 
     var metas =
       '<span class="status-chip status-' + PL.esc(p.status) + '">' + PL.esc(st.rotulo) + "</span>" +
       (p.table_label ? '<span class="meta">📍 ' + PL.esc(p.table_label) + "</span>" : "") +
       (p.customer_name ? '<span class="meta">🙋 ' + PL.esc(p.customer_name) + "</span>" : "") +
       (p.notes ? '<span class="meta obs">📝 ' + PL.esc(p.notes) + "</span>" : "") +
-      (p.error_reason ? '<span class="meta erro">⚠ ' + PL.esc(p.error_reason) + "</span>" : "");
+      (motivos ? '<span class="meta erro">⚠ ' + PL.esc(motivos) + "</span>" : "");
 
     var acoes = p.status === "recebido"
       ? '<button type="button" class="btn btn-danger btn-sm" data-cancelar="' + PL.esc(p.id) + '">Cancelar</button>'
       : '<span class="hint">' + PL.esc(st.icone + " " + st.rotulo) + "</span>";
+
+    // Com uma parte só, o cabeçalho de destino seria ruído: mostramos os
+    // itens direto. Com duas, cada bloco ganha sua etiqueta e seu status.
+    var mostrarCabecalhoDaParte = partes.length > 1;
 
     return '<article class="pedido' + (aberto && min >= atrasadoEm() ? " atrasado" : "") +
       '" data-status="' + PL.esc(p.status) + '">' +
@@ -983,6 +1000,34 @@
           "</span>" +
         "</div>" + tempo +
       "</div>" +
+      (partes.length
+        ? partes.map(function (t) { return blocoDaParte(t, mostrarCabecalhoDaParte); }).join("")
+        : '<div class="pedido-itens"><span class="hint">Itens a caminho…</span></div>') +
+      '<div class="pedido-meta">' + metas + "</div>" +
+      '<div class="pedido-rodape">' +
+        (mostraPreco() ? '<span class="pedido-total">' + PL.dinheiro(p.total_cents) + "</span>" : "<span></span>") +
+        '<div class="pedido-acoes">' + acoes + "</div>" +
+      "</div>" +
+    "</article>";
+  }
+
+  // Um bloco por parte do pedido: a etiqueta de destino, em que pé está,
+  // e os itens daquela metade.
+  function blocoDaParte(t, comCabecalho) {
+    var d = PL.destinoDe(t.destination);
+    var st = PL.STATUS[t.status] || { rotulo: t.status, curto: t.status };
+    var itens = t.itens || [];
+
+    var cabecalho = comCabecalho
+      ? '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0 6px">' +
+          '<span class="destino-chip destino-' + PL.esc(t.destination) + '">' +
+            d.icone + " " + PL.esc(d.rotulo) + "</span>" +
+          '<span class="status-chip status-' + PL.esc(t.status) + '">' +
+            PL.esc(st.curto || st.rotulo) + "</span>" +
+        "</div>"
+      : "";
+
+    return cabecalho +
       '<div class="pedido-itens">' +
         (itens.length
           ? itens.map(function (i) {
@@ -995,13 +1040,7 @@
               "</div>";
             }).join("")
           : '<span class="hint">Itens a caminho…</span>') +
-      "</div>" +
-      '<div class="pedido-meta">' + metas + "</div>" +
-      '<div class="pedido-rodape">' +
-        (mostraPreco() ? '<span class="pedido-total">' + PL.dinheiro(p.total_cents) + "</span>" : "<span></span>") +
-        '<div class="pedido-acoes">' + acoes + "</div>" +
-      "</div>" +
-    "</article>";
+      "</div>";
   }
 
   // ---- semáforo do tempo de espera ----
@@ -1103,7 +1142,9 @@
     if (btn) { btn.disabled = true; btn.textContent = "Cancelando…"; }
 
     try {
-      await PL.backend.mudarStatus(p.id, "cancelado", texto);
+      // Cancela o pedido INTEIRO (as duas partes, se houver): quem pediu
+      // sem querer não quer cancelar só a comida e ficar com a isca.
+      await PL.backend.mudarStatusPedido(p.id, "cancelado", texto);
       fechar();
       PL.aviso("Pedido #" + p.daily_number + " cancelado.", "ok");
       await PL.recarregarPedidos();
