@@ -3,19 +3,24 @@
    ============================================================
    Este arquivo é a ENGRENAGEM ⚙ do administrador. Ele faz três coisas:
 
-     1) Publica o window.PLAdmin, que as outras telas chamam quando o
-        admin toca no ⚙ da barra de cima:
-              PLAdmin.configurarSecao(secao)   → edita AQUELA aba
-              PLAdmin.configurarPedidos()      → ajustes do quadro
-              PLAdmin.configurarGeral()        → configurações gerais
+     1) Publica o window.PLAdmin.abrir(aba, extra), que as outras telas
+        chamam quando o admin toca no ⚙ da barra de cima:
+              PLAdmin.abrir()               → primeira aba
+              PLAdmin.abrir('pedidos')      → ajustes do quadro
+              PLAdmin.abrir('cardapio', s)  → cardápio, já na aba s
      2) Escuta o evento 'abrir-config-geral' (o botão 🛠 do topo).
      3) Registra a tela de Relatórios.
 
-   Por que tudo mora em pop-up e não numa tela cheia de menus: o dono do
-   sistema mexe nisso de vez em quando, quase sempre no tablet, e sempre
-   OLHANDO para a tela que quer mudar. Abrir o editor por cima do cardápio
-   deixa claro o que está sendo configurado — e ao fechar a tela de trás
-   já se redesenha com o resultado.
+   AS CONFIGURAÇÕES SÃO UMA JANELA SÓ, separada por página do app. Antes
+   cada engrenagem abria um pop-up diferente, e para trocar um preço e
+   depois o horário era preciso fechar tudo e recomeçar. Agora a
+   engrenagem só decide em QUAL ABA a janela abre — o resto continua ali
+   do lado, a um toque.
+
+   Por que em pop-up e não numa tela cheia de menus: o dono mexe nisso de
+   vez em quando, quase sempre no tablet, e sempre OLHANDO para a tela que
+   quer mudar. Abrir por cima deixa claro o que está sendo configurado — e
+   ao fechar, a tela de trás já se redesenha com o resultado.
    ============================================================ */
 
 // Definido ANTES da IIFE de propósito: quiosque.js e recepcao.js chamam
@@ -820,22 +825,6 @@ window.PLAdmin = window.PLAdmin || {};
           <span class="field-hint">Número menor aparece antes.</span>
         </label>
       </div>
-      ${s.kind === "tips" ? "" : `
-      <label class="field">
-        <span>Para onde vai o que for pedido aqui</span>
-        <select id="sDestino">
-          <option value="cozinha"${(s.destination || "cozinha") === "cozinha" ? " selected" : ""}>
-            👨‍🍳 Cozinha — alguém precisa preparar
-          </option>
-          <option value="balcao"${s.destination === "balcao" ? " selected" : ""}>
-            🎣 Balcão — a recepção só separa e leva
-          </option>
-        </select>
-        <span class="field-hint">
-          É isto que divide o pedido em partes. Mudar aqui vale só para os
-          <b>próximos</b> pedidos — os que já estão no quadro continuam onde estão.
-        </span>
-      </label>`}
       <label class="switch">
         <input type="checkbox" id="sAtiva"${s.active ? " checked" : ""} />
         <span class="trilho"></span>
@@ -863,8 +852,6 @@ window.PLAdmin = window.PLAdmin || {};
           active: marcado(caixa, "sAtiva"),
           sort_order: Number(val(caixa, "sOrdem")) || 0,
         };
-        // aba de conteúdo não tem destino: o campo nem foi desenhado
-        if (s.kind !== "tips") linha.destination = val(caixa, "sDestino") || "cozinha";
         await PL.backend.salvar("secoes", linha);
         await PL.recarregarCatalogo();
       }, "Salvo!");
@@ -878,15 +865,14 @@ window.PLAdmin = window.PLAdmin || {};
     };
   }
 
-  // ==================================================================
-  //  CONFIGURAR A TELA DE PEDIDOS   (o ⚙ da recepção)
-  // ==================================================================
-  function configurarPedidos() {
+  // ------------------------------------------------------------------
+  //  PAINEL · PEDIDOS  (o semáforo do quadro da recepção)
+  // ------------------------------------------------------------------
+  function desenharAjustesPedidos(corpo) {
+    var caixa = PL.$("#cfg-pedidos", corpo);
+    if (!caixa) return;
     var c = (PL.ctx && PL.ctx.cliente) || {};
-    abrirFormulario({
-      titulo: "Ajustes do quadro de pedidos",
-      textoSalvar: "Salvar",
-      corpo: `
+    caixa.innerHTML = `
         <p class="hint" style="margin:0;line-height:1.6">
           O relógio de cada cartão conta desde a hora em que o quiosque mandou o pedido.
           Estes dois números decidem quando o cartão muda de cor — é o semáforo da recepção.
@@ -911,108 +897,85 @@ window.PLAdmin = window.PLAdmin || {};
             não neste aparelho. Um número baixo demais deixa o quadro sempre vermelho e
             as pessoas param de olhar para a cor.
           </div>
-        </div>`,
-      aoSalvar: async function (corpo) {
-        var atencao = Number(val(corpo, "slaAtencao")) || 0;
-        var atraso = Number(val(corpo, "slaAtraso")) || 0;
-        if (atencao < 1 || atraso < 1) { PL.aviso("Os dois números precisam ser pelo menos 1 minuto.", "avisa"); return false; }
-        if (atraso <= atencao) { PL.aviso("O “atrasado” precisa ser maior que o “atenção”.", "avisa"); return false; }
+        </div>
+        <button type="button" class="btn btn-primary" id="slaSalvar" style="min-height:48px">Salvar</button>`;
 
+    PL.$("#slaSalvar", caixa).onclick = async function () {
+      var botao = PL.$("#slaSalvar", caixa);
+      var atencao = Number(val(caixa, "slaAtencao")) || 0;
+      var atraso = Number(val(caixa, "slaAtraso")) || 0;
+      if (atencao < 1 || atraso < 1) { PL.aviso("Os dois números precisam ser pelo menos 1 minuto.", "avisa"); return; }
+      if (atraso <= atencao) { PL.aviso("O “atrasado” precisa ser maior que o “atenção”.", "avisa"); return; }
+
+      botao.disabled = true;
+      await tentar(async function () {
         var campos = { sla_warn_minutes: atencao, sla_late_minutes: atraso };
         await PL.backend.salvarCliente(campos);
         atualizarClienteNaMemoria(campos);
-        PL.recarregarTela();
-      },
-    });
-  }
-
-  // ==================================================================
-  //  CONFIGURAR A TELA DA COZINHA   (o ⚙ da aba da cozinha)
-  //  Estes números ficam em tenants.settings (na nuvem), e não no
-  //  config.js: assim o dono muda pelo tablet, e vale para todos os
-  //  aparelhos de uma vez.
-  // ==================================================================
-  function ajustesDaCozinha() {
-    var s = (PL.ctx && PL.ctx.cliente && PL.ctx.cliente.settings) || {};
-    return {
-      atencao: Number(s.cozinhaAtencao) || Number(PL.CFG.cozinhaAtencao) || 8,
-      atrasado: Number(s.cozinhaAtrasado) || Number(PL.CFG.cozinhaAtrasado) || 18,
+      }, "Salvo!");
+      botao.disabled = false;
     };
   }
 
-  function configurarCozinha() {
-    var a = ajustesDaCozinha();
-    abrirFormulario({
-      titulo: "Ajustes da tela da cozinha",
-      textoSalvar: "Salvar",
-      corpo: `
-        <p class="hint" style="margin:0;line-height:1.6">
-          O relógio da comanda conta de quando ela <b>entrou na cozinha</b> — e não de
-          quando o quiosque pediu. É de propósito: a cozinha não tem culpa do tempo que
-          o pedido ficou esperando a recepção liberar.
-        </p>
-        <div class="field-row">
-          <label class="field">
-            <span>Minutos para “atenção”</span>
-            <input type="number" id="czAtencao" min="1" max="180" step="1" value="${esc(a.atencao)}" />
-            <span class="field-hint">Passou disso, a comanda fica <b>âmbar</b>.</span>
-          </label>
-          <label class="field">
-            <span>Minutos para “atrasado”</span>
-            <input type="number" id="czAtraso" min="2" max="240" step="1" value="${esc(a.atrasado)}" />
-            <span class="field-hint">Passou disso, fica <b>vermelha e pisca</b>.</span>
-          </label>
-        </div>
-        <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
-          <div>
-            Estes números são só da cozinha. O semáforo da recepção é outro, e conta desde
-            que o quiosque pediu — ajuste dele fica no ⚙ da aba <b>Pedidos</b>.
-          </div>
-        </div>`,
-      aoSalvar: async function (corpo) {
-        var atencao = Number(val(corpo, "czAtencao")) || 0;
-        var atraso = Number(val(corpo, "czAtraso")) || 0;
-        if (atencao < 1 || atraso < 1) { PL.aviso("Os dois números precisam ser pelo menos 1 minuto.", "avisa"); return false; }
-        if (atraso <= atencao) { PL.aviso("O “atrasado” precisa ser maior que o “atenção”.", "avisa"); return false; }
-
-        // settings é um campo livre: preservamos o que já estiver lá dentro
-        var atual = (PL.ctx && PL.ctx.cliente && PL.ctx.cliente.settings) || {};
-        var novo = Object.assign({}, atual, { cozinhaAtencao: atencao, cozinhaAtrasado: atraso });
-        await PL.backend.salvarCliente({ settings: novo });
-        atualizarClienteNaMemoria({ settings: novo });
-        PL.recarregarTela();
-      },
-    });
-  }
-
   // ==================================================================
-  //  CONFIGURAÇÕES GERAIS   (o 🛠 da barra de cima)
+  //  O PAINEL DE CONFIGURAÇÕES  (um só, separado por página)
+  //  ------------------------------------------------------------------
+  //  Antes cada engrenagem abria um pop-up diferente, e para trocar um
+  //  preço e depois o horário era preciso fechar tudo e recomeçar. Agora
+  //  existe UMA janela com uma aba por página do app: a engrenagem só
+  //  decide em qual aba ela abre.
+  //
+  //  PLAdmin.abrir()               → abre na primeira aba
+  //  PLAdmin.abrir('pedidos')      → abre nos ajustes do quadro
+  //  PLAdmin.abrir('cardapio', s)  → abre no cardápio e já entra na aba s
   // ==================================================================
-  function configurarGeral() {
-    modalComAbas({
+  var ABAS_PAINEL = [
+    { id: "casa",      rotulo: "Estabelecimento", desenhar: desenharCasa },
+    { id: "cardapio",  rotulo: "Cardápio",        desenhar: desenharAbasDoQuiosque },
+    { id: "pedidos",   rotulo: "Pedidos",         desenhar: desenharAjustesPedidos },
+    { id: "quiosques", rotulo: "Quiosques",       desenhar: desenharQuiosques },
+    { id: "equipe",    rotulo: "Equipe",          desenhar: desenharEquipe },
+    { id: "sobre",     rotulo: "Sobre",           desenhar: desenharSobre },
+  ];
+
+  // Cada aba entrega só uma div vazia; quem preenche é o 'desenhar', tanto
+  // na abertura quanto a cada troca. Assim uma gravação numa aba não deixa
+  // as outras mostrando dado velho.
+  function abrirPainel(abaInicial, extra) {
+    var quais = ABAS_PAINEL.slice();
+    var i = 0;
+    quais.forEach(function (a, n) { if (a.id === abaInicial) i = n; });
+    // a aba pedida vai para a frente: o núcleo sempre abre a primeira
+    if (i > 0) quais.unshift(quais.splice(i, 1)[0]);
+
+    var painel = modalComAbas({
       titulo: "Configurações",
       larga: true,
-      abas: [
-        { id: "casa", rotulo: "Estabelecimento", corpo: '<div id="cfgCasa"></div>',
-          aoAbrir: function (corpo) { desenharCasa(corpo); } },
-        { id: "abas", rotulo: "Abas do quiosque", corpo: '<div id="cfgAbas"></div>',
-          aoAbrir: function (corpo) { desenharAbasDoQuiosque(corpo); } },
-        { id: "quiosques", rotulo: "Quiosques", corpo: '<div id="cfgQuiosques"></div>',
-          aoAbrir: function (corpo) { desenharQuiosques(corpo); } },
-        { id: "equipe", rotulo: "Equipe", corpo: '<div id="cfgEquipe"></div>',
-          aoAbrir: function (corpo) { desenharEquipe(corpo); } },
-        { id: "sobre", rotulo: "Sobre", corpo: '<div id="cfgSobre"></div>',
-          aoAbrir: function (corpo) { desenharSobre(corpo); } },
-      ],
+      abas: quais.map(function (a) {
+        return {
+          id: a.id,
+          rotulo: a.rotulo,
+          corpo: '<div id="cfg-' + a.id + '"></div>',
+          aoAbrir: function (corpo) { a.desenhar(corpo); },
+        };
+      }),
+      // ao fechar, a tela de trás precisa aparecer já com o que mudou
       aoFechar: function () { PL.recarregarTela(); },
     });
+
+    // Veio da engrenagem do cardápio com uma aba do quiosque em mãos:
+    // abre o editor dela por cima, que é o que o admin queria ver.
+    if (abaInicial === "cardapio" && extra && extra.id) {
+      setTimeout(function () { configurarSecao(extra); }, 60);
+    }
+    return painel;
   }
 
   // ------------------------------------------------------------------
   //  GERAL · ESTABELECIMENTO
   // ------------------------------------------------------------------
   function desenharCasa(corpo) {
-    var caixa = PL.$("#cfgCasa", corpo);
+    var caixa = PL.$("#cfg-casa", corpo);
     if (!caixa) return;
     var c = (PL.ctx && PL.ctx.cliente) || {};
     var fusoAtual = c.timezone || "America/Sao_Paulo";
@@ -1121,7 +1084,7 @@ window.PLAdmin = window.PLAdmin || {};
   //  GERAL · ABAS DO QUIOSQUE
   // ------------------------------------------------------------------
   function desenharAbasDoQuiosque(corpo) {
-    var caixa = PL.$("#cfgAbas", corpo);
+    var caixa = PL.$("#cfg-cardapio", corpo);
     if (!caixa) return;
     var secoes = porOrdem(PL.catalogo.secoes);
 
@@ -1134,16 +1097,10 @@ window.PLAdmin = window.PLAdmin || {};
         var quantos = s.kind === "tips"
           ? PL.catalogo.dicas.filter(function (d) { return d.section_id === s.id; }).length + " dica(s)"
           : PL.catalogo.produtos.filter(function (p) { return p.section_id === s.id; }).length + " produto(s)";
-        // O destino é o que decide a divisão do pedido — merece ficar à vista
-        // na lista, e não escondido dentro do editar.
-        var destino = s.kind === "tips" ? "" :
-          (s.destination === "balcao"
-            ? ' · <span class="destino-chip destino-balcao">🎣 Balcão</span>'
-            : ' · <span class="destino-chip destino-cozinha">👨‍🍳 Cozinha</span>');
         return linhaEdit({
           id: s.id,
           inativo: !s.active,
-          nome: `${s.icon ? esc(s.icon) + " " : ""}${esc(s.label)}${destino}`,
+          nome: `${s.icon ? esc(s.icon) + " " : ""}${esc(s.label)}`,
           sub: `${quantos} · chave: ${esc(s.key)}${s.active ? "" : " · desligada"}`,
           reordena: true,
           chaveSwitch: "ativa",
@@ -1234,21 +1191,6 @@ window.PLAdmin = window.PLAdmin || {};
             <span class="field-hint">O tipo não muda depois de criada.</span>
           </label>`}
         </div>
-        <label class="field" id="nsCampoDestino">
-          <span>Para onde vai o que for pedido aqui</span>
-          <select id="nsDestino">
-            <option value="cozinha"${(s.destination || "cozinha") === "cozinha" ? " selected" : ""}>
-              👨‍🍳 Cozinha — alguém precisa preparar
-            </option>
-            <option value="balcao"${s.destination === "balcao" ? " selected" : ""}>
-              🎣 Balcão — a recepção só separa e leva
-            </option>
-          </select>
-          <span class="field-hint">
-            É isto que divide o pedido: comida e isca pedidos juntos viram duas partes,
-            uma esperando a cozinha e a outra saindo na hora.
-          </span>
-        </label>
         <label class="switch">
           <input type="checkbox" id="nsAtiva"${novo || s.active ? " checked" : ""} />
           <span class="trilho"></span>
@@ -1265,17 +1207,6 @@ window.PLAdmin = window.PLAdmin || {};
           </div>
         </div>`,
       aoAbrir: function (corpo) {
-        // Aba de conteúdo (dicas) não gera pedido nenhum, então perguntar
-        // "para onde vai" só confundiria. O campo some.
-        function ajustarDestino() {
-          var tipo = novo ? (val(corpo, "nsTipo") || "catalog") : s.kind;
-          var campo = PL.$("#nsCampoDestino", corpo);
-          if (campo) campo.hidden = tipo === "tips";
-        }
-        var selTipo = PL.$("#nsTipo", corpo);
-        if (selTipo) selTipo.onchange = ajustarDestino;
-        ajustarDestino();
-
         if (!novo) return;
         // mostra a chave que vai ser criada enquanto a pessoa digita o nome:
         // é mais fácil aceitar uma regra quando dá para ver o resultado
@@ -1294,7 +1225,6 @@ window.PLAdmin = window.PLAdmin || {};
           label: rotulo,
           icon: val(corpo, "nsIcone"),
           active: marcado(corpo, "nsAtiva"),
-          destination: val(corpo, "nsDestino") || "cozinha",
         };
         if (novo) {
           linha.key = chaveDoTexto(rotulo);
@@ -1318,17 +1248,32 @@ window.PLAdmin = window.PLAdmin || {};
   //  GERAL · QUIOSQUES
   // ------------------------------------------------------------------
   function desenharQuiosques(corpo) {
-    var caixa = PL.$("#cfgQuiosques", corpo);
+    var caixa = PL.$("#cfg-quiosques", corpo);
     if (!caixa) return;
     var quiosques = PL.catalogo.quiosques.slice().sort(function (a, b) {
       return (Number(a.number) || 0) - (Number(b.number) || 0);
     });
 
+    var ativos = quiosques.filter(function (q) { return q.active !== false; });
+
     caixa.innerHTML = `
       <div class="card-head">
         <span class="hint">${quiosques.length} quiosque(s). Cada um tem o seu login (quiosque1, quiosque2…).</span>
-        <button type="button" class="btn btn-sm btn-primary" data-acao="novo" style="min-height:44px">+ Novo quiosque</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-sm btn-outline" data-acao="folha"
+                  style="min-height:44px" ${ativos.length ? "" : "disabled"}>🖨️ Folha de QR codes</button>
+          <button type="button" class="btn btn-sm btn-primary" data-acao="novo" style="min-height:44px">+ Novo quiosque</button>
+        </div>
       </div>
+
+      <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
+        <div>
+          O <b>QR code</b> de cada quiosque leva direto para a tela dele. Cole no balcão:
+          quem escaneia já cai no app com o usuário preenchido, só falta a senha.
+          O QR <b>não</b> carrega senha nenhuma — ele só diz de quem é o balcão.
+        </div>
+      </div>
+
       ${quiosques.length ? `<div class="lista-edit">${quiosques.map(function (q) {
         var partes = [];
         if (q.location_note) partes.push(q.location_note);
@@ -1343,7 +1288,10 @@ window.PLAdmin = window.PLAdmin || {};
           rotuloSwitch: "Ativo",
           dicaSwitch: "Desativado, ele some das listas — mas os pedidos antigos dele continuam no histórico.",
           ligado: !!q.active,
-          botoes: [{ acao: "editar", texto: "Editar", classe: "btn-outline" }],
+          botoes: [
+            { acao: "qr", texto: "QR", classe: "btn-neutral", dica: "Ver e baixar o QR code deste quiosque" },
+            { acao: "editar", texto: "Editar", classe: "btn-outline" },
+          ],
         });
       }).join("")}</div>` : `<div class="vazio"><b>Nenhum quiosque cadastrado</b>Sem quiosque ninguém consegue mandar pedido.</div>`}
       <p class="hint" style="line-height:1.6">
@@ -1354,6 +1302,8 @@ window.PLAdmin = window.PLAdmin || {};
     ligarAcoes(caixa, async function (acao, id, alvo) {
       var q = quiosques.find(function (x) { return x.id === id; });
 
+      if (acao === "folha") { folhaDeQrCodes(ativos); return; }
+      if (acao === "qr" && q) { verQrCode(q); return; }
       if (acao === "novo") { formularioQuiosque(null, quiosques, function () { desenharQuiosques(corpo); }); return; }
       if (acao === "editar" && q) { formularioQuiosque(q, quiosques, function () { desenharQuiosques(corpo); }); return; }
 
@@ -1365,6 +1315,151 @@ window.PLAdmin = window.PLAdmin || {};
         desenharQuiosques(corpo);
       }
     });
+  }
+
+  // ==================================================================
+  //  QR CODE DE CADA QUIOSQUE
+  //  Gerado aqui dentro, pelo qr.js — sem serviço na internet. Isso
+  //  importa: um QR feito por site de terceiro deixaria o endereço da
+  //  casa passando por um servidor que não é nosso, e pararia de
+  //  funcionar no dia em que aquele site saísse do ar.
+  // ==================================================================
+  function svgDoQr(texto) {
+    if (!window.QRCode || typeof window.QRCode.svg !== "function") return null;
+    try { return window.QRCode.svg(texto, { margin: 2, dark: "#0E1D1F", light: "#ffffff" }); }
+    catch (e) { console.warn("QR:", e); return null; }
+  }
+
+  function verQrCode(q) {
+    var url = PL.enderecoDoQuiosque(q.number);
+    var svg = svgDoQr(url);
+
+    if (!svg) {
+      PL.aviso("Não consegui gerar o QR code. Confira se o arquivo qr.js foi publicado.", "erro");
+      return;
+    }
+
+    PL.modal({
+      titulo: "QR code · " + (q.name || "Quiosque " + q.number),
+      corpo: `
+        <div style="text-align:center">
+          <div style="width:min(70vw,260px);margin:0 auto 12px">${svg}</div>
+          <div style="font-size:1.3rem;font-weight:800;color:var(--brand-dark)">${esc(q.name || "Quiosque " + q.number)}</div>
+          <p class="hint" style="word-break:break-all;margin:8px 0 0">${esc(url)}</p>
+        </div>
+        <div class="aviso aviso-info" style="font-weight:400;font-size:.86rem">
+          <div>
+            Imprima, plastifique e cole no balcão. Quem escaneia abre o app já com
+            <b>quiosque${esc(q.number)}</b> preenchido — só falta a senha.
+          </div>
+        </div>`,
+      botoes: [
+        { texto: "Copiar endereço", classe: "btn-neutral", acao: function () { copiarTexto(url); } },
+        { texto: "⬇ Baixar PNG", classe: "btn-outline",
+          acao: function () { baixarQrPng(svg, q); } },
+        { texto: "🖨️ Imprimir", classe: "btn-primary",
+          acao: function (fechar) { fechar(); folhaDeQrCodes([q]); } },
+      ],
+    });
+  }
+
+  // O SVG vira PNG no próprio navegador: um canvas, o desenho por cima e
+  // pronto. Sem isso o dono teria um arquivo que o WhatsApp não abre.
+  function baixarQrPng(svg, q) {
+    var LADO = 900;
+    var RODAPE = 150;
+    try {
+      var img = new Image();
+      var fonte = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+
+      img.onload = function () {
+        var cv = document.createElement("canvas");
+        cv.width = LADO;
+        cv.height = LADO + RODAPE;
+        var g = cv.getContext("2d");
+        g.fillStyle = "#ffffff";
+        g.fillRect(0, 0, cv.width, cv.height);
+        g.drawImage(img, 0, 0, LADO, LADO);
+
+        // o nome embaixo do código: sem ele, 17 folhas iguais viram
+        // um quebra-cabeça na hora de colar
+        g.fillStyle = "#0E1D1F";
+        g.textAlign = "center";
+        g.font = "bold 74px Segoe UI, system-ui, Arial, sans-serif";
+        g.fillText(q.name || "Quiosque " + q.number, LADO / 2, LADO + 78);
+        g.font = "34px Segoe UI, system-ui, Arial, sans-serif";
+        g.fillStyle = "#5B6B69";
+        g.fillText("Aponte a câmera para fazer o pedido", LADO / 2, LADO + 124);
+
+        var a = document.createElement("a");
+        a.href = cv.toDataURL("image/png");
+        a.download = "qr-quiosque-" + q.number + ".png";
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function () { a.remove(); }, 1000);
+        PL.aviso("QR code baixado.", "ok");
+      };
+
+      img.onerror = function () {
+        PL.aviso("Não consegui montar a imagem. Use o botão Imprimir.", "erro");
+      };
+      img.src = fonte;
+    } catch (e) {
+      console.error(e);
+      PL.aviso("Não consegui baixar. Use o botão Imprimir.", "erro");
+    }
+  }
+
+  // Folha pronta para imprimir: um QR por quiosque, com o nome embaixo.
+  // Montamos dentro da própria página (e não numa janela nova) porque
+  // tablet costuma bloquear pop-up — e aí o botão não faria nada.
+  function folhaDeQrCodes(lista) {
+    if (!lista || !lista.length) {
+      PL.aviso("Nenhum quiosque ativo para imprimir.", "avisa");
+      return;
+    }
+    if (!window.QRCode) {
+      PL.aviso("Não consegui gerar os QR codes. Confira se o arquivo qr.js foi publicado.", "erro");
+      return;
+    }
+
+    var antiga = document.getElementById("folhaQr");
+    if (antiga) antiga.remove();
+
+    var folha = document.createElement("div");
+    folha.id = "folhaQr";
+    folha.className = "folha-qr";
+    folha.innerHTML =
+      '<div class="folha-qr-topo">' +
+        "<b>" + esc((PL.ctx && PL.ctx.cliente && PL.ctx.cliente.name) || "Pedidos") + "</b>" +
+        "<span>Recorte e cole um em cada quiosque</span>" +
+      "</div>" +
+      '<div class="folha-qr-grade">' +
+        lista.map(function (q) {
+          var svg = svgDoQr(PL.enderecoDoQuiosque(q.number));
+          return '<div class="folha-qr-item">' +
+              (svg || '<div class="hint">QR indisponível</div>') +
+              "<b>" + esc(q.name || "Quiosque " + q.number) + "</b>" +
+              "<span>Aponte a câmera para fazer o pedido</span>" +
+            "</div>";
+        }).join("") +
+      "</div>";
+
+    document.body.appendChild(folha);
+    document.body.classList.add("imprimindo-folha");
+
+    function limpar() {
+      document.body.classList.remove("imprimindo-folha");
+      var f = document.getElementById("folhaQr");
+      if (f) f.remove();
+      window.removeEventListener("afterprint", limpar);
+    }
+    window.addEventListener("afterprint", limpar);
+
+    // alguns navegadores não disparam 'afterprint'; a rede de segurança
+    // evita a folha ficar pendurada por cima do app para sempre
+    setTimeout(limpar, 60000);
+    setTimeout(function () { window.print(); }, 120);
   }
 
   function formularioQuiosque(quiosque, quiosques, aoTerminar) {
@@ -1440,7 +1535,7 @@ window.PLAdmin = window.PLAdmin || {};
   //  no SQL Editor do Supabase.
   // ------------------------------------------------------------------
   function desenharEquipe(corpo) {
-    var caixa = PL.$("#cfgEquipe", corpo);
+    var caixa = PL.$("#cfg-equipe", corpo);
     if (!caixa) return;
 
     caixa.innerHTML = `
@@ -1597,7 +1692,7 @@ window.PLAdmin = window.PLAdmin || {};
   //  GERAL · SOBRE
   // ------------------------------------------------------------------
   function desenharSobre(corpo) {
-    var caixa = PL.$("#cfgSobre", corpo);
+    var caixa = PL.$("#cfg-sobre", corpo);
     if (!caixa) return;
     var demo = PL.backend.tipo === "demo";
     // só o endereço do projeto. A chave NUNCA aparece aqui — mesmo sendo a
@@ -1748,8 +1843,8 @@ window.PLAdmin = window.PLAdmin || {};
       var resumo = await PL.backend.relatorio("v_resumo_dia", { dia: dia });
       var mais = await PL.backend.relatorio("v_mais_pedidos", { dia: dia });
 
-      // A v_resumo_dia não traz o tempo até a cozinha; a v_pedidos traz.
-      // Se ela não existir, o cartão fica com "—" e o resto continua certo.
+      // A v_resumo_dia não traz o tempo até a recepção VER o pedido; a
+      // v_pedidos traz. Sem ela o cartão fica com "—" e o resto vale igual.
       var detalhe = [];
       try { detalhe = await PL.backend.relatorio("v_pedidos", { dia: dia }); }
       catch (e) { console.warn("v_pedidos:", e); }
@@ -1766,7 +1861,7 @@ window.PLAdmin = window.PLAdmin || {};
     var d = {
       fonte: "banco", aviso: "",
       pedidos: 0, faturamento: 0, errados: 0, itens: 0,
-      minCozinha: null, minEntrega: null,
+      minLancar: null, minVer: null,
       porQuiosque: [], mais: [],
     };
 
@@ -1782,7 +1877,7 @@ window.PLAdmin = window.PLAdmin || {};
         itens: Number(r.itens || 0),
         total_cents: Number(r.total_cents || 0),
         errados: Number(r.com_erro || 0) + Number(r.cancelados || 0),
-        media: r.media_min_entrega === null || r.media_min_entrega === undefined ? null : Number(r.media_min_entrega),
+        media: r.media_min_lancar === null || r.media_min_lancar === undefined ? null : Number(r.media_min_lancar),
       });
     });
     d.porQuiosque.sort(function (a, b) { return b.pedidos - a.pedidos || a.numero - b.numero; });
@@ -1794,11 +1889,11 @@ window.PLAdmin = window.PLAdmin || {};
       };
     }).sort(function (a, b) { return b.quantidade - a.quantidade || b.total_cents - a.total_cents; });
 
-    d.minCozinha = media(detalhe.map(function (p) { return p.min_ate_cozinha; }));
-    d.minEntrega = media(detalhe.map(function (p) { return p.min_ate_entrega; }));
-    // sem a v_pedidos, ainda dá para ter a média de entrega pelo resumo
-    if (d.minEntrega === null) {
-      d.minEntrega = media(d.porQuiosque.map(function (q) { return q.media; }));
+    d.minVer    = media(detalhe.map(function (p) { return p.min_ate_ver; }));
+    d.minLancar = media(detalhe.map(function (p) { return p.min_ate_lancar; }));
+    // sem a v_pedidos, ainda dá para ter a média pelo resumo por quiosque
+    if (d.minLancar === null) {
+      d.minLancar = media(d.porQuiosque.map(function (q) { return q.media; }));
     }
     return d;
   }
@@ -1809,7 +1904,7 @@ window.PLAdmin = window.PLAdmin || {};
     var d = {
       fonte: "local", aviso: "",
       pedidos: 0, faturamento: 0, errados: 0, itens: 0,
-      minCozinha: null, minEntrega: null,
+      minLancar: null, minVer: null,
       porQuiosque: [], mais: [],
     };
 
@@ -1827,17 +1922,10 @@ window.PLAdmin = window.PLAdmin || {};
     d.errados = pedidos.length - valem.length;
     d.faturamento = valem.reduce(function (s, p) { return s + Number(p.total_cents || 0); }, 0);
     d.itens = valem.reduce(function (s, p) { return s + Number(p.items_count || 0); }, 0);
-    // Os horários vivem nas PARTES, não no pedido: a comida entra na
-    // cozinha, a isca nunca entra. Então a média "até a cozinha" olha só as
-    // partes de cozinha, e a "até a entrega" só conta quando TUDO saiu.
-    d.minCozinha = media(pedidos.map(function (p) {
-      var entrou = (p.partes || [])
-        .filter(function (t) { return t.destination === "cozinha" && t.kitchen_at; })
-        .map(function (t) { return t.kitchen_at; })
-        .sort()[0];
-      return minutosEntre(p.created_at, entrou);
-    }));
-    d.minEntrega = media(pedidos.map(function (p) { return minutosEntre(p.created_at, entregueEm(p)); }));
+    // O número que interessa: quanto o quiosque esperou entre pedir e a
+    // recepção lançar. É o único tempo que o sistema controla.
+    d.minLancar = media(pedidos.map(function (p) { return minutosEntre(p.created_at, p.launched_at); }));
+    d.minVer    = media(pedidos.map(function (p) { return minutosEntre(p.created_at, p.ack_at); }));
 
     var porQ = {};
     pedidos.forEach(function (p) {
@@ -1854,7 +1942,7 @@ window.PLAdmin = window.PLAdmin || {};
         linha.itens += Number(p.items_count || 0);
         linha.total_cents += Number(p.total_cents || 0);
       }
-      var t = minutosEntre(p.created_at, entregueEm(p));
+      var t = minutosEntre(p.created_at, p.launched_at);
       if (t !== null) linha.tempos.push(t);
     });
     d.porQuiosque = Object.keys(porQ).map(function (k) {
@@ -1866,16 +1954,13 @@ window.PLAdmin = window.PLAdmin || {};
 
     var porProduto = {};
     valem.forEach(function (p) {
-      // os itens moram dentro das partes desde que a cozinha entrou no jogo
-      (p.partes || []).forEach(function (t) {
-        (t.itens || []).forEach(function (i) {
-          var chave = i.product_name || "?";
-          var l = porProduto[chave] || (porProduto[chave] = {
-            produto: chave, aba: i.section_key || "", quantidade: 0, total_cents: 0,
-          });
-          l.quantidade += Number(i.qty || 0);
-          l.total_cents += Number(i.line_total_cents || 0);
+      (p.itens || []).forEach(function (i) {
+        var chave = i.product_name || "?";
+        var l = porProduto[chave] || (porProduto[chave] = {
+          produto: chave, aba: i.section_key || "", quantidade: 0, total_cents: 0,
         });
+        l.quantidade += Number(i.qty || 0);
+        l.total_cents += Number(i.line_total_cents || 0);
       });
     });
     d.mais = Object.keys(porProduto).map(function (k) { return porProduto[k]; })
@@ -1888,16 +1973,6 @@ window.PLAdmin = window.PLAdmin || {};
     if (!inicio || !fim) return null;
     var m = (new Date(fim).getTime() - new Date(inicio).getTime()) / 60000;
     return isFinite(m) && m >= 0 ? m : null;
-  }
-
-  // Um pedido só está entregue quando a ÚLTIMA parte saiu. Se a comida foi
-  // e a isca ficou no balcão, o pedido não terminou — e contar o tempo da
-  // metade que saiu daria uma média bonita e mentirosa.
-  function entregueEm(p) {
-    var partes = p.partes || [];
-    if (!partes.length) return null;
-    if (partes.some(function (t) { return !t.delivered_at; })) return null;
-    return partes.map(function (t) { return t.delivered_at; }).sort().pop();
   }
 
   // Média que ignora o que não aconteceu (null): um pedido que ainda não foi
@@ -1919,8 +1994,8 @@ window.PLAdmin = window.PLAdmin || {};
       <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
         ${cartaoNumero("Pedidos no dia", String(d.pedidos), d.itens + " item(ns)")}
         ${cartaoNumero("Faturamento", PL.dinheiro(d.faturamento), "sem os errados e cancelados")}
-        ${cartaoNumero("Até a cozinha", d.minCozinha === null ? "—" : PL.tempoCurto(d.minCozinha), "tempo médio")}
-        ${cartaoNumero("Até a entrega", d.minEntrega === null ? "—" : PL.tempoCurto(d.minEntrega), "tempo médio")}
+        ${cartaoNumero("Até a recepção ver", d.minVer === null ? "—" : PL.tempoCurto(d.minVer), "tempo médio")}
+        ${cartaoNumero("Até lançar", d.minLancar === null ? "—" : PL.tempoCurto(d.minLancar), "tempo médio")}
         ${cartaoNumero("Deram errado", String(d.errados), "errados + cancelados")}
       </div>
       <p class="hint" style="margin:12px 0 0">
@@ -1933,7 +2008,7 @@ window.PLAdmin = window.PLAdmin || {};
           <thead>
             <tr>
               <th>Quiosque</th><th class="num">Pedidos</th><th class="num">Itens</th>
-              <th class="num">Total</th><th class="num">Errados</th><th class="num">Média até entregar</th>
+              <th class="num">Total</th><th class="num">Errados</th><th class="num">Média até lançar</th>
             </tr>
           </thead>
           <tbody>
@@ -2001,11 +2076,11 @@ window.PLAdmin = window.PLAdmin || {};
     linhas.push(["Itens", d.itens]);
     linhas.push(["Faturamento (R$)", reais(d.faturamento)]);
     linhas.push(["Deram errado", d.errados]);
-    linhas.push(["Média até a cozinha (min)", minutos(d.minCozinha)]);
-    linhas.push(["Média até a entrega (min)", minutos(d.minEntrega)]);
+    linhas.push(["Média até a recepção ver (min)", minutos(d.minVer)]);
+    linhas.push(["Média até lançar (min)", minutos(d.minLancar)]);
     linhas.push([]);
     linhas.push(["Por quiosque", "", "", "", "", ""]);
-    linhas.push(["Número", "Quiosque", "Pedidos", "Itens", "Total (R$)", "Errados", "Média até entregar (min)"]);
+    linhas.push(["Número", "Quiosque", "Pedidos", "Itens", "Total (R$)", "Errados", "Média até lançar (min)"]);
     d.porQuiosque.forEach(function (q) {
       linhas.push([q.numero || "", q.nome, q.pedidos, q.itens, reais(q.total_cents), q.errados, minutos(q.media)]);
     });
@@ -2023,11 +2098,13 @@ window.PLAdmin = window.PLAdmin || {};
   // ==================================================================
   //  O QUE AS OUTRAS TELAS CHAMAM
   // ==================================================================
+  // É por aqui que as telas chamam a engrenagem. Um ponto só: a tela diz
+  // em que aba quer abrir, e o painel cuida do resto.
+  window.PLAdmin.abrir = abrirPainel;
+  // nomes antigos, mantidos para não quebrar nada que ainda os chame
   window.PLAdmin.configurarSecao = configurarSecao;
-  window.PLAdmin.configurarPedidos = configurarPedidos;
-  window.PLAdmin.configurarCozinha = configurarCozinha;
-  window.PLAdmin.configurarGeral = configurarGeral;
+  window.PLAdmin.configurarGeral = function () { abrirPainel(); };
 
   // O 🛠 da barra de cima só avisa; quem sabe o que fazer é este arquivo.
-  PL.ao("abrir-config-geral", function () { configurarGeral(); });
+  PL.ao("abrir-config-geral", function () { abrirPainel(); });
 })();

@@ -274,6 +274,14 @@
   }
 
   function lerQuiosqueGravado() {
+    // Veio pelo QR do quiosque 7? Então é por ele que este aparelho lança,
+    // mesmo que tenha ficado outro escolhido da última vez. O QR é uma
+    // decisão explícita de quem escaneou; o guardado é só a última memória.
+    var doLink = PL.quiosqueDoLink;
+    if (doLink) {
+      var achado = quiosquesAtivos().filter(function (q) { return Number(q.number) === doLink; })[0];
+      if (achado) return achado.id;
+    }
     try { return localStorage.getItem(CHAVE_QUIOSQUE) || null; } catch (e) { return null; }
   }
 
@@ -892,10 +900,11 @@
     desenharMeusPedidos();
   }
 
-  // A RLS do banco já entrega só os pedidos deste quiosque; o filtro aqui é
-  // cinto de segurança para o dia em que esta tela abrir com outro perfil.
+  // A RLS do banco já entrega só os pedidos deste quiosque. Para o ADMIN,
+  // que enxerga tudo, valem os pedidos do quiosque que ele escolheu lá no
+  // cardápio — senão esta tela viraria uma cópia do quadro da recepção.
   function meusPedidos() {
-    var meu = PL.ctx.perfil ? PL.ctx.perfil.kiosk_id : null;
+    var meu = (PL.ctx.perfil && PL.ctx.perfil.kiosk_id) || quiosqueDoPedido();
     var lista = (PL.pedidos || []).filter(function (p) {
       return !meu || p.kiosk_id === meu;
     });
@@ -915,10 +924,7 @@
   // (a animação de "pedido novo") sem motivo nenhum.
   function assinatura(lista) {
     return lista.map(function (p) {
-      // as partes entram na conta: a comida pode ficar pronta enquanto o
-      // resumo do pedido continua "na cozinha" por causa da outra metade
-      var partes = (p.partes || []).map(function (t) { return t.id + "=" + t.status; }).join(",");
-      return p.id + ":" + p.status + ":" + p.updated_at + ":" + partes;
+      return p.id + ":" + p.status + ":" + p.updated_at;
     }).join("|");
   }
 
@@ -952,43 +958,31 @@
       "</div>";
   }
 
-  // O quiosque pediu UMA vez, então enxerga UM cartão — mas dentro dele
-  // aparecem as partes, cada uma no seu andamento. Sem isso, o garçom veria
-  // "na cozinha" e acharia que a isca também estava presa lá.
   function cartaoPedido(p) {
     var aberto = PL.ABERTOS.indexOf(p.status) >= 0;
     var min = PL.minutosDesde(p.created_at);
     var st = PL.STATUS[p.status] || { rotulo: p.status, icone: "" };
-    var partes = p.partes || [];   // o banco pode devolver o pedido sem elas
+    var itens = p.itens || [];   // o banco pode devolver o pedido sem os itens
     // items_count vem do banco; passa por Number para nunca virar texto solto
     // dentro do HTML (e porque o pedido pode chegar antes de a conta fechar).
-    var qtdItens = Number(p.items_count) || 0;
-
-    // Quando tudo fechou, o que interessa é a hora em que a ÚLTIMA parte saiu.
-    var saiuEm = partes.map(function (t) { return t.delivered_at; }).filter(Boolean).sort().pop();
+    var qtdItens = Number(p.items_count || itens.length) || 0;
 
     var tempo = aberto
       ? '<span class="pedido-tempo ' + classeTempo(min) + '" data-criado="' + PL.esc(p.created_at) + '">' +
         PL.tempoCurto(min) + "</span>"
-      : '<span class="pedido-tempo' + (p.status === "entregue" ? "" : " atrasado") + '">' +
-        PL.hora(saiuEm || p.updated_at || p.created_at) + "</span>";
-
-    var motivos = partes.map(function (t) { return t.error_reason; }).filter(Boolean).join(" · ");
+      : '<span class="pedido-tempo' + (p.status === "lancado" ? "" : " atrasado") + '">' +
+        PL.hora(p.launched_at || p.updated_at || p.created_at) + "</span>";
 
     var metas =
       '<span class="status-chip status-' + PL.esc(p.status) + '">' + PL.esc(st.rotulo) + "</span>" +
       (p.table_label ? '<span class="meta">📍 ' + PL.esc(p.table_label) + "</span>" : "") +
       (p.customer_name ? '<span class="meta">🙋 ' + PL.esc(p.customer_name) + "</span>" : "") +
       (p.notes ? '<span class="meta obs">📝 ' + PL.esc(p.notes) + "</span>" : "") +
-      (motivos ? '<span class="meta erro">⚠ ' + PL.esc(motivos) + "</span>" : "");
+      (p.error_reason ? '<span class="meta erro">⚠ ' + PL.esc(p.error_reason) + "</span>" : "");
 
     var acoes = p.status === "recebido"
       ? '<button type="button" class="btn btn-danger btn-sm" data-cancelar="' + PL.esc(p.id) + '">Cancelar</button>'
       : '<span class="hint">' + PL.esc(st.icone + " " + st.rotulo) + "</span>";
-
-    // Com uma parte só, o cabeçalho de destino seria ruído: mostramos os
-    // itens direto. Com duas, cada bloco ganha sua etiqueta e seu status.
-    var mostrarCabecalhoDaParte = partes.length > 1;
 
     return '<article class="pedido' + (aberto && min >= atrasadoEm() ? " atrasado" : "") +
       '" data-status="' + PL.esc(p.status) + '">' +
@@ -1000,34 +994,6 @@
           "</span>" +
         "</div>" + tempo +
       "</div>" +
-      (partes.length
-        ? partes.map(function (t) { return blocoDaParte(t, mostrarCabecalhoDaParte); }).join("")
-        : '<div class="pedido-itens"><span class="hint">Itens a caminho…</span></div>') +
-      '<div class="pedido-meta">' + metas + "</div>" +
-      '<div class="pedido-rodape">' +
-        (mostraPreco() ? '<span class="pedido-total">' + PL.dinheiro(p.total_cents) + "</span>" : "<span></span>") +
-        '<div class="pedido-acoes">' + acoes + "</div>" +
-      "</div>" +
-    "</article>";
-  }
-
-  // Um bloco por parte do pedido: a etiqueta de destino, em que pé está,
-  // e os itens daquela metade.
-  function blocoDaParte(t, comCabecalho) {
-    var d = PL.destinoDe(t.destination);
-    var st = PL.STATUS[t.status] || { rotulo: t.status, curto: t.status };
-    var itens = t.itens || [];
-
-    var cabecalho = comCabecalho
-      ? '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0 6px">' +
-          '<span class="destino-chip destino-' + PL.esc(t.destination) + '">' +
-            d.icone + " " + PL.esc(d.rotulo) + "</span>" +
-          '<span class="status-chip status-' + PL.esc(t.status) + '">' +
-            PL.esc(st.curto || st.rotulo) + "</span>" +
-        "</div>"
-      : "";
-
-    return cabecalho +
       '<div class="pedido-itens">' +
         (itens.length
           ? itens.map(function (i) {
@@ -1040,7 +1006,13 @@
               "</div>";
             }).join("")
           : '<span class="hint">Itens a caminho…</span>') +
-      "</div>";
+      "</div>" +
+      '<div class="pedido-meta">' + metas + "</div>" +
+      '<div class="pedido-rodape">' +
+        (mostraPreco() ? '<span class="pedido-total">' + PL.dinheiro(p.total_cents) + "</span>" : "<span></span>") +
+        '<div class="pedido-acoes">' + acoes + "</div>" +
+      "</div>" +
+    "</article>";
   }
 
   // ---- semáforo do tempo de espera ----
@@ -1142,17 +1114,15 @@
     if (btn) { btn.disabled = true; btn.textContent = "Cancelando…"; }
 
     try {
-      // Cancela o pedido INTEIRO (as duas partes, se houver): quem pediu
-      // sem querer não quer cancelar só a comida e ficar com a isca.
-      await PL.backend.mudarStatusPedido(p.id, "cancelado", texto);
+      await PL.backend.mudarStatus(p.id, "cancelado", texto);
       fechar();
       PL.aviso("Pedido #" + p.daily_number + " cancelado.", "ok");
       await PL.recarregarPedidos();
       desenharMeusPedidos(true);
     } catch (e) {
       console.error("Falha ao cancelar", e);
-      // O caso mais comum: a recepção já mandou para a cozinha entre o toque
-      // e o envio, e a regra do banco (com razão) barrou o cancelamento.
+      // O caso mais comum: a recepção lançou o pedido entre o toque e o
+      // envio, e a regra do banco (com razão) barrou o cancelamento.
       PL.aviso(PL.erroLegivel(e), "erro");
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = "Cancelar o pedido"; }
@@ -1205,37 +1175,28 @@
     },
     // O ⚙ da barra de cima configura A ABA QUE ESTÁ ABERTA. Quem sabe fazer
     // isso é o admin.js; aqui só entregamos qual seção está na tela.
+    // O ⚙ abre as configurações já na aba do cardápio, apontando para a
+    // seção que está aberta atrás. Todas as outras configurações continuam
+    // ali do lado, então dá para arrumar tudo sem sair e entrar de novo.
     engrenagem: function () {
-      if (!window.PLAdmin || typeof window.PLAdmin.configurarSecao !== "function") {
-        PL.aviso("A engrenagem ainda não carregou.", "erro");
+      if (!window.PLAdmin || typeof window.PLAdmin.abrir !== "function") {
+        PL.aviso("As configurações ainda não carregaram.", "erro");
         return;
       }
-      var s = secaoAtual();
-      // Sem nenhuma aba cadastrada não há "esta aba" para configurar — e
-      // mandar null para o editor quebraria o pop-up. Mandamos o admin para
-      // o lugar certo: as configurações gerais, onde as abas são criadas.
-      if (!s) {
-        if (typeof window.PLAdmin.configurarGeral === "function") {
-          PL.aviso("Nenhuma aba criada ainda. Comece por aqui.", "avisa");
-          window.PLAdmin.configurarGeral();
-        } else {
-          PL.aviso("Crie a primeira aba pelo botão 🛠️ das configurações gerais.", "avisa");
-        }
-        return;
-      }
-      window.PLAdmin.configurarSecao(s);
+      window.PLAdmin.abrir("cardapio", secaoAtual());
     },
   });
 
-  // A aba de acompanhamento é opcional: em casa que entrega rápido demais ela
-  // só ocupa espaço na barra. Desligada no config.js, nem é registrada.
+  // A aba de acompanhamento é opcional: em casa que resolve rápido demais
+  // ela só ocupa espaço na barra. Desligada no config.js, nem é registrada.
+  // O admin também a enxerga — é a forma dele conferir o que o quiosque vê.
   if (PL.CFG.mostrarMeusPedidos !== false) {
     PL.registrarTela({
       id: "meuspedidos",
       rotulo: "Meus pedidos",
       icone: "📋",
       ordem: 20,
-      papeis: ["quiosque"],
+      papeis: ["quiosque", "admin"],
       montar: montarMeusPedidos,
       aoSair: function () {
         telaPedidosAtiva = false;

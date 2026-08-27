@@ -47,7 +47,7 @@ window.PEDIDOS_CONFIG = {
 
   // Sugestões que aparecem embaixo do campo de usuário, para o pessoal
   // não precisar decorar. Deixe [] para esconder.
-  atalhosLogin: ["recepcao", "cozinha", "adm"],
+  atalhosLogin: ["recepcao", "adm"],
 
   // ------------------------------------------------------------------
   //  TELA DO QUIOSQUE
@@ -66,8 +66,7 @@ window.PEDIDOS_CONFIG = {
   somPedidoNovo: true,       // toca um aviso quando chega pedido
   repetirSom: 0,             // segundos para repetir o aviso enquanto houver
                              // pedido não visto (0 = toca só uma vez)
-  colunasStatus: true,       // true = quadro em colunas; false = lista única
-  mostrarEntreguesHoje: 20,  // quantos pedidos já fechados ficam à mostra
+  mostrarEntreguesHoje: 20,  // quantos pedidos já resolvidos ficam à mostra
 
   // Semáforo do tempo de espera (minutos). Serve de padrão enquanto o
   // admin não ajustar na engrenagem — depois vale o que está na nuvem.
@@ -83,22 +82,6 @@ window.PEDIDOS_CONFIG = {
     "Cliente desistiu",
     "Produto acabou",
   ],
-
-  // ------------------------------------------------------------------
-  //  TELA DA COZINHA
-  //  A cozinha só enxerga as comandas de comida, e só depois de a
-  //  recepção liberar. Ela tem um botão só: "Pronto".
-  // ------------------------------------------------------------------
-  cozinhaSom: true,           // toca quando uma comanda entra na cozinha
-  cozinhaLetraGrande: true,   // fonte maior: a tela fica longe, no calor
-  cozinhaProntasPorPerto: 6,  // quantas comandas já prontas continuam à mostra
-  cozinhaPodeVoltar: true,    // deixa desfazer um "pronto" apertado sem querer
-
-  // Semáforo da cozinha, em minutos, contando de quando a comanda entrou.
-  // Fica separado do SLA da recepção de propósito: a recepção conta desde
-  // que o quiosque pediu, a cozinha conta desde que recebeu.
-  cozinhaAtencao: 8,
-  cozinhaAtrasado: 18,
 
   // ------------------------------------------------------------------
   //  CONEXÃO COM O BANCO (Supabase)

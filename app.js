@@ -96,86 +96,18 @@
 
   // ------------------------------------------------------------------
   //  ESTADOS DO PEDIDO
-  //  A ordem desta lista é a ordem natural do fluxo — o quadro da
-  //  recepção e os botões de ação saem daqui.
+  //  O caminho é curto de propósito: o pedido chega, a recepção lança,
+  //  acabou. Não existe etapa entre uma coisa e outra — e é daqui que
+  //  saem os botões do quadro.
   // ------------------------------------------------------------------
   const STATUS = {
-    recebido:  { rotulo: "Recebido",      curto: "Novo",      icone: "🔔", coluna: true },
-    cozinha:   { rotulo: "Na cozinha",    curto: "Cozinha",   icone: "👨‍🍳", coluna: true },
-    pronto:    { rotulo: "Pronto",        curto: "Pronto",    icone: "✅", coluna: true },
-    entregue:  { rotulo: "Entregue",      curto: "Entregue",  icone: "📦", coluna: false },
-    erro:      { rotulo: "Pedido errado", curto: "Errado",    icone: "⚠️", coluna: false },
-    cancelado: { rotulo: "Cancelado",     curto: "Cancelado", icone: "✖",  coluna: false },
+    recebido:  { rotulo: "A lançar",      curto: "Novo",      icone: "🔔" },
+    lancado:   { rotulo: "Lançado",       curto: "Lançado",   icone: "✅" },
+    erro:      { rotulo: "Pedido errado", curto: "Errado",    icone: "⚠️" },
+    cancelado: { rotulo: "Cancelado",     curto: "Cancelado", icone: "✖"  },
   };
-  const ABERTOS = ["recebido", "cozinha", "pronto"];
-  const FECHADOS = ["entregue", "erro", "cancelado"];
-
-  // ------------------------------------------------------------------
-  //  DESTINOS  (para onde vai cada parte do pedido)
-  //  Um pedido de "2 porções + 1 vara" vira DUAS partes: a comida espera
-  //  a cozinha, a vara sai na hora. Quem decide é a aba do produto —
-  //  o admin configura isso na engrenagem, sem mexer no código.
-  // ------------------------------------------------------------------
-  const DESTINOS = {
-    cozinha: {
-      rotulo: "Cozinha", curto: "Cozinha", icone: "👨‍🍳",
-      // recebido → cozinha → pronto → entregue
-      etapas: ["recebido", "cozinha", "pronto"],
-      explica: "Alguém precisa preparar. Passa pela tela da cozinha.",
-    },
-    balcao: {
-      rotulo: "Balcão", curto: "Balcão", icone: "🎣",
-      // recebido → pronto → entregue (nunca entra na cozinha)
-      etapas: ["recebido", "pronto"],
-      explica: "A recepção só separa e leva. Não passa pela cozinha.",
-    },
-  };
-
-  function destinoDe(chave) {
-    return DESTINOS[chave] || { rotulo: chave || "?", curto: chave || "?", icone: "📦", etapas: ABERTOS, explica: "" };
-  }
-
-  // Qual é o próximo passo de uma parte, conforme o destino dela.
-  // É daqui que saem os botões da recepção — nada de "se for pesca então…"
-  // espalhado pelas telas.
-  function proximoStatus(parte) {
-    const st = parte && parte.status;
-    if (parte && parte.destination === "balcao") {
-      if (st === "recebido") return "pronto";      // separou: já pode levar
-      if (st === "pronto")   return "entregue";
-      return null;
-    }
-    if (st === "recebido") return "cozinha";
-    if (st === "cozinha")  return "pronto";        // quem aperta é a COZINHA
-    if (st === "pronto")   return "entregue";
-    return null;
-  }
-
-  function statusAnterior(parte) {
-    const st = parte && parte.status;
-    if (parte && parte.destination === "balcao") {
-      if (st === "pronto")   return "recebido";
-      if (st === "entregue") return "pronto";
-      return null;
-    }
-    if (st === "cozinha")  return "recebido";
-    if (st === "pronto")   return "cozinha";
-    if (st === "entregue") return "pronto";
-    return null;
-  }
-
-  // Junta todas as partes de todos os pedidos numa lista só, cada uma
-  // carregando o cabeçalho do pedido a que pertence. É essa lista que o
-  // quadro da recepção e a tela da cozinha realmente desenham.
-  function achatarPartes(lista) {
-    const saida = [];
-    (lista || []).forEach((p) => {
-      (p.partes || []).forEach((t) => {
-        saida.push(Object.assign({}, t, { pedido: p }));
-      });
-    });
-    return saida;
-  }
+  const ABERTOS = ["recebido"];
+  const FECHADOS = ["lancado", "erro", "cancelado"];
 
   // Nomes que o app usa ⇄ nomes reais das tabelas no banco.
   // Ter um lugar só com essa tradução evita erro de digitação espalhado.
@@ -498,16 +430,10 @@
         return { secoes, categorias, produtos, dicas, quiosques };
       },
 
-      // Traz o pedido com as PARTES dentro, e os itens dentro de cada parte.
-      // Num round-trip só: o tablet da recepção pede isso a cada mudança, e
-      // três consultas separadas fariam a tela piscar fora de sincronia.
       async carregarPedidos(dia) {
         return ok(
           sb.from("orders")
-            .select(
-              "*, quiosque:kiosks(id,number,name)," +
-              "partes:order_tickets(*, itens:order_items(*))"
-            )
+            .select("*, quiosque:kiosks(id,number,name), itens:order_items(*)")
             .eq("service_date", dia)
             .order("created_at", { ascending: false })
         );
@@ -523,23 +449,15 @@
         }));
       },
 
-      // Empurra UMA parte (é o botão da recepção e o da cozinha)
-      async mudarStatusParte(parteId, status, motivo) {
-        return ok(sb.rpc("set_ticket_status", {
-          p_ticket_id: parteId, p_status: status, p_reason: motivo || null,
-        }));
-      },
-
-      // Mexe no pedido inteiro de uma vez (cancelar tudo, reabrir tudo)
-      async mudarStatusPedido(pedidoId, status, motivo) {
+      async mudarStatus(id, status, motivo) {
         return ok(sb.rpc("set_order_status", {
-          p_order_id: pedidoId, p_status: status, p_reason: motivo || null,
+          p_order_id: id, p_status: status, p_reason: motivo || null,
         }));
       },
 
       async marcarVistos(ids) {
         if (!ids || !ids.length) return 0;
-        return ok(sb.rpc("ack_tickets", { p_ids: ids }));
+        return ok(sb.rpc("ack_orders", { p_ids: ids }));
       },
 
       async disponibilidade(produtoId, disponivel) {
@@ -579,7 +497,7 @@
 
       escutar(aoMudarPedidos, aoMudarCatalogo) {
         const canal = sb.channel("pedidos-lagoa");
-        ["orders", "order_tickets", "order_items"].forEach((t) =>
+        ["orders", "order_items"].forEach((t) =>
           canal.on("postgres_changes", { event: "*", schema: "public", table: t }, aoMudarPedidos));
         ["products", "sections", "categories", "tips", "tenants", "kiosks"].forEach((t) =>
           canal.on("postgres_changes", { event: "*", schema: "public", table: t }, aoMudarCatalogo));
@@ -614,11 +532,10 @@
       QUIOSQUES.push({ id: "q" + i, tenant_id: CLIENTE.id, number: i, name: "Quiosque " + i, active: true, sort_order: i });
     }
 
-    // destination: 'cozinha' = alguém prepara | 'balcao' = a recepção separa e leva
     const SECOES = [
-      { id: "s1", tenant_id: CLIENTE.id, key: "comida", label: "Cardápio de Comida", icon: "🍽️", kind: "catalog", destination: "cozinha", sort_order: 1, active: true },
-      { id: "s2", tenant_id: CLIENTE.id, key: "pesca",  label: "Cardápio de Pesca",  icon: "🎣", kind: "catalog", destination: "balcao",  sort_order: 2, active: true },
-      { id: "s3", tenant_id: CLIENTE.id, key: "dicas",  label: "Dicas do Quiosque",  icon: "💡", kind: "tips",    destination: "balcao",  sort_order: 3, active: true },
+      { id: "s1", tenant_id: CLIENTE.id, key: "comida", label: "Cardápio de Comida", icon: "🍽️", kind: "catalog", sort_order: 1, active: true },
+      { id: "s2", tenant_id: CLIENTE.id, key: "pesca",  label: "Cardápio de Pesca",  icon: "🎣", kind: "catalog", sort_order: 2, active: true },
+      { id: "s3", tenant_id: CLIENTE.id, key: "dicas",  label: "Dicas do Quiosque",  icon: "💡", kind: "tips",    sort_order: 3, active: true },
     ];
 
     const CATS = [
@@ -662,7 +579,6 @@
     const PERFIS = {
       adm:      { role: "admin",    display_name: "Administrador", kiosk: null },
       recepcao: { role: "recepcao", display_name: "Recepção",      kiosk: null },
-      cozinha:  { role: "cozinha",  display_name: "Cozinha",       kiosk: null },
     };
     QUIOSQUES.forEach((q) => {
       PERFIS["quiosque" + q.number] = { role: "quiosque", display_name: q.name, kiosk: q };
@@ -703,37 +619,16 @@
 
     function novaId() { return "x" + Math.random().toString(36).slice(2, 10); }
 
-    // Os mesmos carimbos que o trigger tg_tickets_stamp faz no banco.
-    function aplicarStatusNaParte(parte, status, motivo) {
+    // Os mesmos carimbos que o trigger tg_orders_stamp faz no banco.
+    function aplicarStatus(p, status, motivo) {
       const agora = new Date().toISOString();
-      parte.status = status;
-      parte.updated_at = agora;
-      if (!parte.ack_at && status !== "recebido") parte.ack_at = agora;
-      if (status === "cozinha"  && !parte.kitchen_at)   parte.kitchen_at = agora;
-      if (status === "pronto"   && !parte.ready_at)     parte.ready_at = agora;
-      if (status === "entregue" && !parte.delivered_at) parte.delivered_at = agora;
-      if (FECHADOS.indexOf(status) >= 0) parte.closed_at = parte.closed_at || agora;
-      else parte.closed_at = null;
-      if (status === "erro" || status === "cancelado") parte.error_reason = motivo || null;
-    }
-
-    // O mesmo resumo que o trigger tg_tickets_resumo faz: manda a parte
-    // MENOS adiantada, porque é ela que o quiosque ainda está esperando.
-    function resumirPedido(pedido) {
-      const partes = pedido.partes || [];
-      const abertas = partes.filter((t) => ABERTOS.indexOf(t.status) >= 0);
-      if (abertas.length) {
-        abertas.sort((a, b) => ABERTOS.indexOf(a.status) - ABERTOS.indexOf(b.status));
-        pedido.status = abertas[0].status;
-        pedido.closed_at = null;
-      } else if (partes.length) {
-        pedido.status = partes.some((t) => t.status === "entregue") ? "entregue"
-          : partes.some((t) => t.status === "erro") ? "erro" : "cancelado";
-        pedido.closed_at = partes.map((t) => t.closed_at).filter(Boolean).sort().pop() || null;
-      }
-      pedido.items_count = partes.reduce((s, t) => s + (t.items_count || 0), 0);
-      pedido.total_cents = partes.reduce((s, t) => s + (t.total_cents || 0), 0);
-      pedido.updated_at = new Date().toISOString();
+      p.status = status;
+      p.updated_at = agora;
+      if (!p.ack_at && status !== "recebido") p.ack_at = agora;
+      if (status === "lancado" && !p.launched_at) p.launched_at = agora;
+      if (FECHADOS.indexOf(status) >= 0) p.closed_at = p.closed_at || agora;
+      else p.closed_at = null;
+      if (status === "erro" || status === "cancelado") p.error_reason = motivo || null;
     }
 
     return {
@@ -745,7 +640,7 @@
       async entrar(email) {
         const login = String(email).split("@")[0].toLowerCase();
         if (!PERFIS[login]) {
-          throw new Error("No modo demonstração os usuários são: adm, recepcao, cozinha e quiosque1 a quiosque17.");
+          throw new Error("No modo demonstração os usuários são: adm, recepcao e quiosque1 a quiosque17.");
         }
         const b = ler(); b.login = login; gravar(b);
         return contexto(b);
@@ -761,27 +656,14 @@
 
       // A mesma filtragem que a RLS faz no banco de verdade. Copiar essa
       // regra aqui é chato, mas é o que garante que a demonstração não
-      // mostre à cozinha algo que no banco ela não veria.
+      // mostre a um perfil algo que no banco ele não veria.
       async carregarPedidos(dia) {
         const b = ler();
         const meu = contexto(b);
-        const papel = meu ? meu.perfil.role : null;
-
         let lista = b.pedidos.filter((p) => p.service_date === dia);
-
-        if (papel === "quiosque") {
+        if (meu && meu.perfil.role === "quiosque") {
           lista = lista.filter((p) => p.kiosk_id === meu.perfil.kiosk_id);
-        } else if (papel === "cozinha") {
-          // só as partes da cozinha, e só depois de a recepção liberar
-          lista = lista
-            .map((p) => Object.assign({}, p, {
-              partes: (p.partes || []).filter(
-                (t) => t.destination === "cozinha" && t.status !== "recebido"
-              ),
-            }))
-            .filter((p) => p.partes.length);
         }
-
         return lista.sort((a, x) => new Date(x.created_at) - new Date(a.created_at));
       },
 
@@ -797,54 +679,33 @@
         const agora = new Date().toISOString();
         const pedidoId = novaId();
 
-        // Agrupa os itens pelo DESTINO da aba: é a divisão do pedido em partes.
-        const porDestino = {};
-        (p.itens || []).forEach((it) => {
+        const itens = (p.itens || []).map((it) => {
           const prod = b.produtos.find((x) => x.id === it.product_id);
           if (!prod) throw new Error("Produto não encontrado.");
           if (prod.available === false || prod.active === false) {
             throw new Error("O item " + prod.name + " saiu do cardápio.");
           }
           const secao = b.secoes.find((s) => s.id === prod.section_id) || {};
-          const destino = secao.destination || "cozinha";
           const qtd = Math.max(1, Number(it.qty) || 1);
-
-          (porDestino[destino] = porDestino[destino] || []).push({
+          return {
             id: novaId(), order_id: pedidoId, product_id: prod.id, product_name: prod.name,
-            section_key: secao.key, destination: destino,
+            section_key: secao.key,
             unit_price_cents: prod.price_cents, qty: qtd,
             line_total_cents: prod.price_cents * qtd, notes: it.notes || null,
-          });
-        });
-
-        const destinos = Object.keys(porDestino);
-        if (!destinos.length) throw new Error("Pedido sem itens.");
-
-        const partes = destinos.map((d) => {
-          const itens = porDestino[d];
-          const parteId = novaId();
-          itens.forEach((i) => { i.ticket_id = parteId; });
-          return {
-            id: parteId, order_id: pedidoId, tenant_id: b.cliente.id, kiosk_id: q.id,
-            destination: d, status: "recebido",
-            items_count: itens.reduce((s, i) => s + i.qty, 0),
-            total_cents: itens.reduce((s, i) => s + i.line_total_cents, 0),
-            created_at: agora, updated_at: agora,
-            ack_at: null, kitchen_at: null, ready_at: null, delivered_at: null,
-            closed_at: null, error_reason: null,
-            itens: itens,
           };
         });
+        if (!itens.length) throw new Error("Pedido sem itens.");
 
         const pedido = {
           id: pedidoId, tenant_id: b.cliente.id, kiosk_id: q.id,
           daily_number: doDia.length + 1, service_date: dia, status: "recebido",
           customer_name: p.cliente || null, table_label: p.lugar || null, notes: p.observacao || null,
-          items_count: partes.reduce((s, t) => s + t.items_count, 0),
-          total_cents: partes.reduce((s, t) => s + t.total_cents, 0),
-          created_at: agora, updated_at: agora, closed_at: null,
+          items_count: itens.reduce((s, i) => s + i.qty, 0),
+          total_cents: itens.reduce((s, i) => s + i.line_total_cents, 0),
+          created_at: agora, updated_at: agora,
+          ack_at: null, launched_at: null, closed_at: null, error_reason: null,
           quiosque: { id: q.id, number: q.number, name: q.name },
-          partes: partes,
+          itens: itens,
         };
 
         b.pedidos.push(pedido);
@@ -853,63 +714,31 @@
         return pedido;
       },
 
-      // Empurra UMA parte. As mesmas travas do banco valem aqui.
-      async mudarStatusParte(parteId, status, motivo) {
+      async mudarStatus(id, status, motivo) {
         const b = ler();
         const meu = contexto(b);
-        let pedido = null, parte = null;
-        b.pedidos.forEach((p) => {
-          (p.partes || []).forEach((t) => { if (t.id === parteId) { pedido = p; parte = t; } });
-        });
-        if (!parte) throw new Error("Parte do pedido não encontrada.");
-
-        if ((status === "erro" || status === "cancelado") && !String(motivo || "").trim()) {
-          throw new Error("Informe o motivo.");
-        }
-        if (parte.destination === "balcao" && status === "cozinha") {
-          throw new Error("Esta parte é separada no balcão — ela não passa pela cozinha.");
-        }
-        if (meu && meu.perfil.role === "cozinha") {
-          if (parte.destination !== "cozinha") throw new Error("Esta parte não é da cozinha.");
-          if (["cozinha", "pronto"].indexOf(status) < 0) {
-            throw new Error('A cozinha só marca "pronto" ou volta para "preparando". Fale com a recepção.');
-          }
-        }
-        if (meu && meu.perfil.role === "quiosque" && parte.status !== "recebido") {
-          throw new Error("A cozinha já pegou este pedido. Fale com a recepção.");
-        }
-
-        aplicarStatusNaParte(parte, status, motivo);
-        resumirPedido(pedido);
-        gravar(b);
-        if (avisar) setTimeout(avisar, 30);
-        return parte;
-      },
-
-      // Mexe no pedido inteiro (cancelar tudo, reabrir tudo)
-      async mudarStatusPedido(pedidoId, status, motivo) {
-        const b = ler();
-        const p = b.pedidos.find((x) => x.id === pedidoId);
+        const p = b.pedidos.find((x) => x.id === id);
         if (!p) throw new Error("Pedido não encontrado.");
-        if (status === "cozinha") throw new Error("Mandar para a cozinha é parte por parte.");
+
         if ((status === "erro" || status === "cancelado") && !String(motivo || "").trim()) {
           throw new Error("Informe o motivo.");
         }
-        (p.partes || []).forEach((t) => aplicarStatusNaParte(t, status, motivo));
-        resumirPedido(p);
+        // o quiosque só desiste antes de a recepção lançar
+        if (meu && meu.perfil.role === "quiosque" && p.status !== "recebido") {
+          throw new Error("A recepção já lançou este pedido. Fale com ela.");
+        }
+
+        aplicarStatus(p, status, motivo);
         gravar(b);
         if (avisar) setTimeout(avisar, 30);
-        return (p.partes || []).length;
+        return p;
       },
 
       async marcarVistos(ids) {
         const b = ler();
-        const alvo = {};
-        (ids || []).forEach((id) => { alvo[id] = true; });
-        b.pedidos.forEach((p) => {
-          (p.partes || []).forEach((t) => {
-            if (alvo[t.id] && !t.ack_at) t.ack_at = new Date().toISOString();
-          });
+        (ids || []).forEach((id) => {
+          const p = b.pedidos.find((x) => x.id === id);
+          if (p && !p.ack_at) p.ack_at = new Date().toISOString();
         });
         gravar(b);
         return (ids || []).length;
@@ -983,6 +812,43 @@
   }
 
   // ==================================================================
+  //  QR CODE DO QUIOSQUE
+  //  Cada quiosque tem um QR colado no balcão. Quem escaneia cai no app
+  //  já apontado para aquele quiosque:
+  //     · sem sessão  → o login já vem com "quiosque7" preenchido,
+  //                     só falta a senha
+  //     · recepção/adm → o pedido já sai lançado por aquele quiosque
+  //
+  //  O QR NUNCA carrega senha. Ele diz apenas DE QUEM é o balcão — quem
+  //  escaneia continua tendo que provar que pode entrar. Um QR com senha
+  //  dentro seria a chave do sistema pendurada na parede.
+  // ==================================================================
+  let quiosqueDoLink = null;   // número lido do endereço (ex.: 7)
+
+  function lerQuiosqueDoEndereco() {
+    try {
+      const busca = new URLSearchParams(location.search);
+      let v = busca.get("q") || busca.get("quiosque");
+      if (!v) {
+        // alguns leitores de QR jogam os parâmetros para depois do "#"
+        const h = String(location.hash || "");
+        const i = h.indexOf("?");
+        if (i >= 0) v = new URLSearchParams(h.slice(i + 1)).get("q");
+      }
+      const n = parseInt(v, 10);
+      return n > 0 && n < 1000 ? n : null;
+    } catch (e) { return null; }
+  }
+
+  // O endereço que vai dentro do QR. Sai do endereço atual, então funciona
+  // igual em github.io/pedidos_lagoa/ e num domínio próprio — sem ninguém
+  // ter que configurar nada.
+  function enderecoDoQuiosque(numero) {
+    const base = location.origin + location.pathname.replace(/index\.html$/i, "");
+    return base + "?q=" + encodeURIComponent(numero);
+  }
+
+  // ==================================================================
   //  LOGIN
   // ==================================================================
   // O Supabase só aceita E-MAIL, mas ninguém no quiosque quer digitar
@@ -1022,10 +888,21 @@
       });
     }
 
+    // Veio pelo QR do quiosque: o usuário já entra preenchido e o cursor
+    // cai direto na senha. É o que faz o QR valer a pena — ninguém digita
+    // "quiosque14" num tablet molhado.
+    if (quiosqueDoLink) {
+      const campoUsuario = $("#loginUsuario");
+      if (campoUsuario) campoUsuario.value = "quiosque" + quiosqueDoLink;
+      const sub = $("#loginSub");
+      if (sub) sub.textContent = "Quiosque " + quiosqueDoLink + " — digite a senha";
+      if (dicas) dicas.hidden = true;
+    }
+
     const rodape = $("#loginRodape");
     if (rodape) {
       rodape.innerHTML = backend.tipo === "demo"
-        ? "<b>Modo demonstração.</b> Entre com <b>adm</b>, <b>recepcao</b>, <b>cozinha</b> ou <b>quiosque1</b>…<b>quiosque17</b> — a senha pode ser qualquer coisa. Os dados ficam só neste aparelho."
+        ? "<b>Modo demonstração.</b> Entre com <b>adm</b>, <b>recepcao</b> ou <b>quiosque1</b>…<b>quiosque17</b> — a senha pode ser qualquer coisa. Os dados ficam só neste aparelho."
         : "Esqueceu a senha? Peça para o administrador rodar o <b>06-usuarios.sql</b> de novo com a senha nova.";
     }
 
@@ -1145,36 +1022,22 @@
   }
 
   let primeiraCargaDePedidos = true;
-  let statusAnteriorDasPartes = {};   // id da parte -> status da última carga
 
   async function recarregarPedidos() {
     const dia = hojeNoFuso(ctx && ctx.cliente ? ctx.cliente.timezone : null);
     const novos = await backend.carregarPedidos(dia);
-    const partes = achatarPartes(novos);
 
-    // Quem precisa ser avisado muda conforme a tela: a recepção quer saber
-    // que CHEGOU pedido e que a cozinha marcou PRONTO; a cozinha quer saber
-    // que uma comanda entrou. Então o núcleo não decide nada — só conta o
-    // que mudou desde a última carga, e cada tela filtra o que lhe importa.
-    //
-    // Na PRIMEIRA carga nada "chegou": senão o tablet tocaria o alarme para
-    // a fila inteira só por ter sido ligado de manhã.
-    const novas = [];
-    const mudaram = [];
-    if (!primeiraCargaDePedidos) {
-      partes.forEach((t) => {
-        const antes = statusAnteriorDasPartes[t.id];
-        if (antes === undefined) novas.push(t);
-        else if (antes !== t.status) mudaram.push({ parte: t, de: antes, para: t.status });
-      });
-    }
+    // Descobre se chegou pedido NOVO (para tocar o aviso na recepção).
+    // Na PRIMEIRA carga ninguém "chegou": senão o tablet tocaria o alarme
+    // para a fila inteira só por ter sido ligado de manhã.
+    const antes = new Set(pedidos.map((p) => p.id));
+    const chegaram = primeiraCargaDePedidos
+      ? []
+      : novos.filter((p) => !antes.has(p.id) && p.status === "recebido");
     primeiraCargaDePedidos = false;
 
-    statusAnteriorDasPartes = {};
-    partes.forEach((t) => { statusAnteriorDasPartes[t.id] = t.status; });
-
     pedidos = novos;
-    emitir("pedidos", { pedidos, partes, novas, mudaram });
+    emitir("pedidos", { pedidos, chegaram });
     return pedidos;
   }
 
@@ -1221,13 +1084,8 @@
   function papel()      { return ctx && ctx.perfil ? ctx.perfil.role : null; }
   function ehAdmin()    { return papel() === "admin"; }
   function ehRecepcao() { return papel() === "recepcao"; }
-  function ehCozinha()  { return papel() === "cozinha"; }
   function ehQuiosque() { return papel() === "quiosque"; }
-  // "equipe" = quem manda no quadro inteiro (admin + recepção). A cozinha
-  // de propósito fica de fora: ela vê só as comandas dela.
   function ehEquipe()   { return ehAdmin() || ehRecepcao(); }
-  // "da casa" = todo mundo que trabalha aqui, incluindo a cozinha
-  function ehDaCasa()   { return ehAdmin() || ehRecepcao() || ehCozinha(); }
 
   // ==================================================================
   //  ABRIR O APP (depois do login)
@@ -1295,7 +1153,7 @@
   }
 
   function rotuloPapel(r) {
-    return { admin: "Administrador", recepcao: "Recepção", cozinha: "Cozinha", quiosque: "Quiosque" }[r] || r;
+    return { admin: "Administrador", recepcao: "Recepção", quiosque: "Quiosque" }[r] || r;
   }
 
   // ==================================================================
@@ -1303,6 +1161,7 @@
   // ==================================================================
   async function iniciar() {
     registrarServiceWorker();
+    quiosqueDoLink = lerQuiosqueDoEndereco();
 
     // marca inicial (antes de saber quem é o cliente na nuvem)
     aplicarTema({ name: CFG.marca, legal_name: CFG.estabelecimento });
@@ -1326,7 +1185,9 @@
       await abrirApp();
     } else {
       $("#loginScreen").hidden = false;
-      setTimeout(() => { const c = $("#loginUsuario"); if (c) c.focus(); }, 120);
+      // vindo do QR o usuário já está escrito: o dedo vai direto para a senha
+      const campo = quiosqueDoLink ? "#loginSenha" : "#loginUsuario";
+      setTimeout(() => { const c = $(campo); if (c) c.focus(); }, 120);
     }
   }
 
@@ -1343,25 +1204,25 @@
   //  O QUE AS TELAS PODEM USAR
   // ==================================================================
   const PL = {
-    VERSAO, CFG, STATUS, ABERTOS, FECHADOS, TABELAS, DESTINOS,
+    VERSAO, CFG, STATUS, ABERTOS, FECHADOS, TABELAS,
 
     // atalhos
     $, $$, esc, dinheiro, minutosDesde, tempoCurto, hora, hojeNoFuso, aguarde, adiar,
 
-    // partes do pedido
-    destinoDe, proximoStatus, statusAnterior, achatarPartes,
+    // link do QR code do quiosque (ver logo abaixo)
+    get quiosqueDoLink() { return quiosqueDoLink; },
+    enderecoDoQuiosque,
 
     // avisos e pop-ups
     aviso, modal, confirmar, erroLegivel, tocarAviso, vibrar,
 
     // quem sou eu
     get ctx() { return ctx; },
-    papel, ehAdmin, ehRecepcao, ehCozinha, ehQuiosque, ehEquipe, ehDaCasa,
+    papel, ehAdmin, ehRecepcao, ehQuiosque, ehEquipe,
 
     // dados
     get catalogo() { return catalogo; },
     get pedidos() { return pedidos; },
-    get partes() { return achatarPartes(pedidos); },
     recarregarCatalogo, recarregarPedidos,
     get backend() { return backend; },
     set backend(b) { backend = b; },
