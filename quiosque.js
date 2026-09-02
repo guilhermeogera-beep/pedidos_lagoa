@@ -923,8 +923,11 @@
   // segurança do núcleo bate a cada 45 s e faria os cartões piscarem
   // (a animação de "pedido novo") sem motivo nenhum.
   function assinatura(lista) {
+    // A FASE entra na conta: o pedido continua 'lancado' no banco, mas ao
+    // passar dos minutos o "já estamos levando" precisa virar "finalizado"
+    // sozinho — e sem a fase aqui a tela nunca redesenharia.
     return lista.map(function (p) {
-      return p.id + ":" + p.status + ":" + p.updated_at;
+      return p.id + ":" + p.status + ":" + p.updated_at + ":" + faseDoPedido(p);
     }).join("|");
   }
 
@@ -961,7 +964,8 @@
   function cartaoPedido(p) {
     var aberto = PL.ABERTOS.indexOf(p.status) >= 0;
     var min = PL.minutosDesde(p.created_at);
-    var st = PL.STATUS[p.status] || { rotulo: p.status, icone: "" };
+    var fase = faseDoPedido(p);
+    var f = FASES[fase];
     var itens = p.itens || [];   // o banco pode devolver o pedido sem os itens
     // items_count vem do banco; passa por Number para nunca virar texto solto
     // dentro do HTML (e porque o pedido pode chegar antes de a conta fechar).
@@ -974,18 +978,26 @@
         PL.hora(p.launched_at || p.updated_at || p.created_at) + "</span>";
 
     var metas =
-      '<span class="status-chip status-' + PL.esc(p.status) + '">' + PL.esc(st.rotulo) + "</span>" +
+      '<span class="status-chip ' + f.classe + '">' + f.icone + " " + PL.esc(f.rotulo) + "</span>" +
       (p.table_label ? '<span class="meta">📍 ' + PL.esc(p.table_label) + "</span>" : "") +
       (p.customer_name ? '<span class="meta">🙋 ' + PL.esc(p.customer_name) + "</span>" : "") +
       (p.notes ? '<span class="meta obs">📝 ' + PL.esc(p.notes) + "</span>" : "") +
       (p.error_reason ? '<span class="meta erro">⚠ ' + PL.esc(p.error_reason) + "</span>" : "");
 
+    // A frase de acompanhamento é o que o cliente lê primeiro. Ela some
+    // quando o pedido finaliza — aí não há mais nada a dizer.
+    var recado = f.recado
+      ? '<div class="recado-fase fase-' + fase + '">' + f.icone + " " + PL.esc(f.recado) + "</div>"
+      : "";
+
     var acoes = p.status === "recebido"
       ? '<button type="button" class="btn btn-danger btn-sm" data-cancelar="' + PL.esc(p.id) + '">Cancelar</button>'
-      : '<span class="hint">' + PL.esc(st.icone + " " + st.rotulo) + "</span>";
+      : '<span class="hint">' + PL.esc(f.icone + " " + f.rotulo) + "</span>";
 
     return '<article class="pedido' + (aberto && min >= atrasadoEm() ? " atrasado" : "") +
-      '" data-status="' + PL.esc(p.status) + '">' +
+      (fase === "levando" ? " levando" : "") +
+      '" data-status="' + PL.esc(p.status) + '" data-fase="' + fase + '">' +
+      recado +
       '<div class="pedido-topo">' +
         '<div class="pedido-quiosque">' +
           "<b>Pedido #" + PL.esc(p.daily_number) + "</b>" +
@@ -1014,6 +1026,48 @@
       "</div>" +
     "</article>";
   }
+
+  // ==================================================================
+  //  EM QUE PÉ ESTÁ O PEDIDO, DO PONTO DE VISTA DE QUEM PEDIU
+  //  ------------------------------------------------------------------
+  //  No banco existe um estado só depois que a recepção resolve:
+  //  'lancado'. Mas "lançado" não quer dizer nada para o cliente — ele
+  //  quer saber se a comida está vindo.
+  //
+  //  Então a tela conta o tempo: nos primeiros minutos depois de lançado
+  //  ela diz "já estamos levando", e passado esse prazo vira "finalizado".
+  //  Quem faz isso é o RELÓGIO, não um botão — assim a recepção não
+  //  precisa voltar no pedido para dizer que entregou.
+  // ==================================================================
+  // Cuidado com o zero: aqui ele é um valor VÁLIDO — quer dizer "não mostre
+  // 'já estamos levando', finalize assim que a recepção lançar". Um
+  // `Number(x) || 10` engoliria esse zero e voltaria calado para 10 minutos.
+  function minutosACaminho() {
+    var s = (PL.ctx.cliente && PL.ctx.cliente.settings) || {};
+    var v = s.minutosACaminho;
+    if (v === null || v === undefined || v === "") v = PL.CFG.minutosACaminho;
+    v = Number(v);
+    return isFinite(v) && v >= 0 ? v : 10;
+  }
+
+  function faseDoPedido(p) {
+    if (p.status === "recebido") return "espera";
+    if (p.status === "erro" || p.status === "cancelado") return "problema";
+    if (p.status !== "lancado") return "espera";
+    var desde = PL.minutosDesde(p.launched_at || p.updated_at || p.created_at);
+    return desde < minutosACaminho() ? "levando" : "pronto";
+  }
+
+  var FASES = {
+    espera:   { rotulo: "Recebido",            icone: "🔔", classe: "status-recebido",
+                recado: "A recepção já está vendo o seu pedido." },
+    levando:  { rotulo: "Já estamos levando!", icone: "🛎️", classe: "chip-levando",
+                recado: "Fique no quiosque — alguém leva até você." },
+    pronto:   { rotulo: "Finalizado",          icone: "✅", classe: "status-lancado",
+                recado: "" },
+    problema: { rotulo: "Não deu certo",       icone: "⚠️", classe: "status-erro",
+                recado: "Fale com o atendente do quiosque." },
+  };
 
   // ---- semáforo do tempo de espera ----
   // O que vale é o que o admin ajustou na nuvem; o config.js é só o padrão
@@ -1151,7 +1205,10 @@
 
   PL.ao("tique", function () {
     if (!telaPedidosAtiva) return;
-    atualizarRelogios();
+    // A fase pode virar sozinha com o tempo ("já estamos levando" →
+    // "finalizado"), sem nada mudar no banco. desenharMeusPedidos só
+    // redesenha se a assinatura mudou; senão apenas acerta os relógios.
+    desenharMeusPedidos();
   });
 
   // ==================================================================

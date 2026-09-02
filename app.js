@@ -512,6 +512,171 @@
   }
 
   // ==================================================================
+  //  BANCO — versão PÚBLICA  (o cliente que escaneou o QR)
+  //  ------------------------------------------------------------------
+  //  Quem chega pelo adesivo do quiosque NÃO TEM LOGIN. Este backend fala
+  //  com o banco por quatro funções públicas e mais nada — nem uma linha
+  //  de tabela ele enxerga direto.
+  //
+  //  Por fora ele se comporta igual aos outros, de propósito: assim a
+  //  tela do cardápio (quiosque.js) funciona sem saber quem está usando.
+  // ==================================================================
+  const CHAVE_MEUS_PUBLICOS = "pedidos_lagoa_meus_pedidos";
+
+  function BackendPublico(url, chave, token) {
+    const sb = window.supabase.createClient(url, chave, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    let cardapio = null;   // o que veio do cardapio_publico
+
+    async function ok(promessa) {
+      const { data, error } = await promessa;
+      if (error) throw error;
+      return data;
+    }
+
+    // O banco devolve {erro: "..."} em vez de estourar, para a tela poder
+    // explicar o que houve em português em vez de mostrar código.
+    function conferir(d) {
+      if (d && d.erro) {
+        const e = new Error(d.mensagem || d.erro);
+        e.codigo = d.erro;
+        e.dados = d;
+        throw e;
+      }
+      return d;
+    }
+
+    // Os ids dos próprios pedidos ficam no celular do cliente: é o que
+    // permite acompanhar sem login. Guardamos o dia junto para a lista
+    // não crescer para sempre.
+    function meusIds() {
+      try {
+        const b = JSON.parse(localStorage.getItem(CHAVE_MEUS_PUBLICOS) || "[]");
+        const ontem = Date.now() - 18 * 3600 * 1000;
+        return (Array.isArray(b) ? b : [])
+          .filter((x) => x && x.id && Number(x.em) > ontem)
+          .slice(-30);
+      } catch (e) { return []; }
+    }
+    function guardarId(id) {
+      try {
+        const lista = meusIds();
+        lista.push({ id: id, em: Date.now() });
+        localStorage.setItem(CHAVE_MEUS_PUBLICOS, JSON.stringify(lista.slice(-30)));
+      } catch (e) { /* celular sem armazenamento: perde o acompanhamento, não o pedido */ }
+    }
+
+    return {
+      tipo: "publico",
+      sb: null,          // as telas de admin não existem aqui
+      token: token,
+
+      async sessao() {
+        cardapio = conferir(await ok(sb.rpc("cardapio_publico", { p_token: token })));
+        return {
+          perfil: {
+            id: "publico", role: "quiosque", display_name: cardapio.quiosque.name,
+            tenant_id: cardapio.cliente.id, kiosk_id: cardapio.quiosque.id, active: true,
+          },
+          cliente: cardapio.cliente,
+          quiosque: cardapio.quiosque,
+        };
+      },
+
+      async entrar() { throw new Error("Esta tela não usa senha."); },
+      async sair() { /* não há sessão para encerrar */ },
+
+      async carregarCatalogo() {
+        if (!cardapio) {
+          cardapio = conferir(await ok(sb.rpc("cardapio_publico", { p_token: token })));
+        }
+        return {
+          secoes: cardapio.secoes || [],
+          categorias: cardapio.categorias || [],
+          produtos: cardapio.produtos || [],
+          dicas: cardapio.dicas || [],
+          quiosques: [cardapio.quiosque],
+        };
+      },
+
+      async carregarPedidos() {
+        const ids = meusIds().map((x) => x.id);
+        if (!ids.length) return [];
+        const lista = await ok(sb.rpc("meus_pedidos_publicos", { p_ids: ids }));
+        // a função pública devolve o essencial; completamos o que a tela espera
+        return (lista || []).map((p) => Object.assign({
+          kiosk_id: cardapio ? cardapio.quiosque.id : null,
+          quiosque: cardapio ? cardapio.quiosque : null,
+          itens: [], notes: null, customer_name: null, table_label: null,
+        }, p));
+      },
+
+      async criarPedido(p) {
+        const onde = await ondeEstou();
+        const d = conferir(await ok(sb.rpc("pedido_publico", {
+          p_token: token,
+          p_items: p.itens,
+          p_notes: p.observacao || null,
+          p_customer_name: p.cliente || null,
+          p_table_label: p.lugar || null,
+          p_lat: onde.lat, p_lng: onde.lng, p_accuracy: onde.precisao,
+        })));
+        guardarId(d.id);
+        return { id: d.id, daily_number: d.numero, total_cents: d.total_cents, items_count: d.itens };
+      },
+
+      async mudarStatus(id, status, motivo) {
+        if (status !== "cancelado") {
+          throw new Error("Só o atendente pode mudar isso.");
+        }
+        return conferir(await ok(sb.rpc("cancelar_pedido_publico", {
+          p_id: id, p_token: token, p_motivo: motivo || null,
+        })));
+      },
+
+      async marcarVistos() { return 0; },
+      async disponibilidade() { throw new Error("Sem permissão."); },
+      async salvar() { throw new Error("Sem permissão."); },
+      async remover() { throw new Error("Sem permissão."); },
+      async reordenar() { throw new Error("Sem permissão."); },
+      async salvarCliente() { throw new Error("Sem permissão."); },
+      async relatorio() { return []; },
+
+      // Sem login não há tempo real (o banco não deixa o visitante escutar
+      // as tabelas, e com razão). A recarga periódica do núcleo cobre —
+      // o cliente só precisa ver o próprio pedido mudar de estado.
+      escutar() { return null; },
+    };
+  }
+
+  // Pergunta a localização ao celular. Devolve sempre — se a pessoa negar
+  // ou o aparelho não souber, volta vazio e quem decide o que fazer é o
+  // banco, que é onde a regra vale.
+  function ondeEstou() {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve({ lat: null, lng: null, precisao: null });
+      let respondeu = false;
+      const pronto = (r) => { if (!respondeu) { respondeu = true; resolve(r); } };
+
+      // 12 s: acima disso o cliente acha que travou. Melhor mandar sem a
+      // coordenada e deixar o banco explicar do que ficar rodando à toa.
+      setTimeout(() => pronto({ lat: null, lng: null, precisao: null }), 12000);
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => pronto({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          precisao: pos.coords.accuracy,
+        }),
+        () => pronto({ lat: null, lng: null, precisao: null }),
+        { enableHighAccuracy: true, timeout: 11000, maximumAge: 30000 }
+      );
+    });
+  }
+
+  // ==================================================================
   //  BANCO — versão DEMONSTRAÇÃO (sem Supabase configurado)
   //  Serve para abrir o endereço e navegar por tudo antes do banco
   //  existir. Os dados ficam só neste aparelho e somem se limpar o
@@ -812,40 +977,57 @@
   }
 
   // ==================================================================
-  //  QR CODE DO QUIOSQUE
-  //  Cada quiosque tem um QR colado no balcão. Quem escaneia cai no app
-  //  já apontado para aquele quiosque:
-  //     · sem sessão  → o login já vem com "quiosque7" preenchido,
-  //                     só falta a senha
-  //     · recepção/adm → o pedido já sai lançado por aquele quiosque
+  //  OS DOIS TIPOS DE LINK DO QUIOSQUE
+  //  ------------------------------------------------------------------
+  //  ?k=<codigo>  → É O ADESIVO DO BALCÃO, para o CLIENTE.
+  //                 Abre o cardápio direto, sem senha nenhuma. Quem
+  //                 garante que a pessoa está no local é a localização,
+  //                 conferida no banco na hora de enviar o pedido.
   //
-  //  O QR NUNCA carrega senha. Ele diz apenas DE QUEM é o balcão — quem
-  //  escaneia continua tendo que provar que pode entrar. Um QR com senha
-  //  dentro seria a chave do sistema pendurada na parede.
+  //  ?q=<numero>  → Atalho para a EQUIPE montar um tablet. Não entra
+  //                 sozinho: só preenche o usuário na tela de login.
+  //
+  //  Nenhum dos dois carrega senha. Um QR com senha dentro seria a chave
+  //  do sistema pendurada na parede.
   // ==================================================================
-  let quiosqueDoLink = null;   // número lido do endereço (ex.: 7)
+  let quiosqueDoLink = null;   // número lido do ?q= (atalho da equipe)
+  let tokenDoLink = null;      // código lido do ?k= (adesivo do cliente)
 
-  function lerQuiosqueDoEndereco() {
+  function parametroDoEndereco(nome) {
     try {
       const busca = new URLSearchParams(location.search);
-      let v = busca.get("q") || busca.get("quiosque");
+      let v = busca.get(nome);
       if (!v) {
         // alguns leitores de QR jogam os parâmetros para depois do "#"
         const h = String(location.hash || "");
         const i = h.indexOf("?");
-        if (i >= 0) v = new URLSearchParams(h.slice(i + 1)).get("q");
+        if (i >= 0) v = new URLSearchParams(h.slice(i + 1)).get(nome);
       }
-      const n = parseInt(v, 10);
-      return n > 0 && n < 1000 ? n : null;
+      return v || null;
     } catch (e) { return null; }
   }
 
-  // O endereço que vai dentro do QR. Sai do endereço atual, então funciona
-  // igual em github.io/pedidos_lagoa/ e num domínio próprio — sem ninguém
-  // ter que configurar nada.
+  function lerQuiosqueDoEndereco() {
+    const n = parseInt(parametroDoEndereco("q") || parametroDoEndereco("quiosque"), 10);
+    return n > 0 && n < 1000 ? n : null;
+  }
+
+  function lerTokenDoEndereco() {
+    const t = String(parametroDoEndereco("k") || "").trim();
+    return /^[a-z0-9]{6,32}$/i.test(t) ? t : null;
+  }
+
+  // Os endereços que vão dentro dos QR codes. Saem do endereço atual, então
+  // funcionam igual em github.io/pedidos_lagoa/ e num domínio próprio — sem
+  // ninguém ter que configurar nada.
+  function enderecoBase() {
+    return location.origin + location.pathname.replace(/index\.html$/i, "");
+  }
+  function enderecoDoCliente(token) {
+    return enderecoBase() + "?k=" + encodeURIComponent(token);
+  }
   function enderecoDoQuiosque(numero) {
-    const base = location.origin + location.pathname.replace(/index\.html$/i, "");
-    return base + "?q=" + encodeURIComponent(numero);
+    return enderecoBase() + "?q=" + encodeURIComponent(numero);
   }
 
   // ==================================================================
@@ -1086,6 +1268,10 @@
   function ehRecepcao() { return papel() === "recepcao"; }
   function ehQuiosque() { return papel() === "quiosque"; }
   function ehEquipe()   { return ehAdmin() || ehRecepcao(); }
+  // "público" = o cliente que chegou pelo adesivo, sem login. Ele usa a
+  // mesma tela de cardápio do quiosque, mas não tem botão de sair, não
+  // tem engrenagem e não enxerga pedido de mais ninguém.
+  function ehPublico()  { return !!backend && backend.tipo === "publico"; }
 
   // ==================================================================
   //  ABRIR O APP (depois do login)
@@ -1105,7 +1291,9 @@
         ? `📍 <b>${esc(ctx.quiosque.name)}</b>`
         : `<b>${esc(ctx.perfil.display_name)}</b> <small>${esc(rotuloPapel(ctx.perfil.role))}</small>`;
     }
-    $("#sairBtn").hidden = false;
+    // O cliente do QR não tem sessão para encerrar — um botão "Sair" só o
+    // deixaria preso numa tela de login que ele não pode preencher.
+    $("#sairBtn").hidden = ehPublico();
     $("#sairBtn").onclick = sair;
 
     // a engrenagem geral (🛠) é só do admin
@@ -1162,11 +1350,33 @@
   async function iniciar() {
     registrarServiceWorker();
     quiosqueDoLink = lerQuiosqueDoEndereco();
+    tokenDoLink = lerTokenDoEndereco();
 
     // marca inicial (antes de saber quem é o cliente na nuvem)
     aplicarTema({ name: CFG.marca, legal_name: CFG.estabelecimento });
 
     const temSupabase = CFG.supabaseUrl && CFG.supabaseAnonKey && window.supabase;
+
+    // ---- veio pelo adesivo do balcão: o cliente entra direto ----
+    if (tokenDoLink && temSupabase) {
+      backend = BackendPublico(CFG.supabaseUrl, CFG.supabaseAnonKey, tokenDoLink);
+      PL.backend = backend;
+      PL.demo = false;
+      desenharFaixa();
+      try {
+        ctx = await backend.sessao();
+        await abrirApp();
+        return;
+      } catch (e) {
+        // QR velho, quiosque desativado, pedido público desligado: a pessoa
+        // precisa entender o que houve, e não ver uma tela de login que ela
+        // não tem como preencher.
+        console.warn("QR público:", e);
+        mostrarRecadoDeQrInvalido(e);
+        return;
+      }
+    }
+
     backend = temSupabase
       ? BackendSupabase(CFG.supabaseUrl, CFG.supabaseAnonKey)
       : BackendDemo();
@@ -1185,10 +1395,33 @@
       await abrirApp();
     } else {
       $("#loginScreen").hidden = false;
-      // vindo do QR o usuário já está escrito: o dedo vai direto para a senha
+      // vindo do atalho da equipe o usuário já está escrito: o dedo vai
+      // direto para a senha
       const campo = quiosqueDoLink ? "#loginSenha" : "#loginUsuario";
       setTimeout(() => { const c = $(campo); if (c) c.focus(); }, 120);
     }
+  }
+
+  // Tela de recado para quem escaneou um QR que não vale mais. Sem botão de
+  // login: quem chegou pelo adesivo não tem senha para digitar, e oferecer
+  // um formulário impossível de preencher só piora.
+  function mostrarRecadoDeQrInvalido(erro) {
+    const tela = $("#loginScreen");
+    if (!tela) return;
+    tela.hidden = false;
+    tela.innerHTML =
+      '<div class="login-box">' +
+        '<div style="font-size:3rem;line-height:1">📷</div>' +
+        '<h1 class="login-tit">QR code fora do ar</h1>' +
+        '<p style="color:var(--muted);line-height:1.6;margin:12px 0 0">' +
+          esc(erroLegivel(erro)) +
+        "</p>" +
+        '<p style="color:var(--muted);line-height:1.6;margin:14px 0 0">' +
+          "Chame o atendente do quiosque — ele faz o pedido para você." +
+        "</p>" +
+        '<button type="button" class="btn btn-primary btn-big" style="margin-top:18px" ' +
+          'onclick="location.reload()">Tentar de novo</button>' +
+      "</div>";
   }
 
   function registrarServiceWorker() {
@@ -1209,16 +1442,18 @@
     // atalhos
     $, $$, esc, dinheiro, minutosDesde, tempoCurto, hora, hojeNoFuso, aguarde, adiar,
 
-    // link do QR code do quiosque (ver logo abaixo)
+    // links do QR code (ver "OS DOIS TIPOS DE LINK DO QUIOSQUE")
     get quiosqueDoLink() { return quiosqueDoLink; },
-    enderecoDoQuiosque,
+    get tokenDoLink() { return tokenDoLink; },
+    enderecoDoQuiosque, enderecoDoCliente,
+    ondeEstou,
 
     // avisos e pop-ups
     aviso, modal, confirmar, erroLegivel, tocarAviso, vibrar,
 
     // quem sou eu
     get ctx() { return ctx; },
-    papel, ehAdmin, ehRecepcao, ehQuiosque, ehEquipe,
+    papel, ehAdmin, ehRecepcao, ehQuiosque, ehEquipe, ehPublico,
 
     // dados
     get catalogo() { return catalogo; },

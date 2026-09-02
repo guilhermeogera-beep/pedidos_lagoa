@@ -60,6 +60,13 @@ window.PEDIDOS_CONFIG = {
   mostrarMeusPedidos: true,  // aba onde o quiosque acompanha o que pediu
   confirmarEnvio: true,      // pede confirmação antes de mandar o pedido
 
+  // Depois que a recepção lança, o cliente vê "já estamos levando!" por
+  // estes minutos. Passado o prazo, vira "finalizado" sozinho — quem
+  // fecha o pedido na tela dele é o RELÓGIO, para a recepção não precisar
+  // voltar no pedido só para dizer que entregou.
+  // (o admin pode mudar isso pela engrenagem, e aí vale o da nuvem)
+  minutosACaminho: 10,
+
   // ------------------------------------------------------------------
   //  TELA DA RECEPÇÃO
   // ------------------------------------------------------------------

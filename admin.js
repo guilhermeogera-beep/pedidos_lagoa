@@ -1268,11 +1268,13 @@ window.PLAdmin = window.PLAdmin || {};
 
       <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
         <div>
-          O <b>QR code</b> de cada quiosque leva direto para a tela dele. Cole no balcão:
-          quem escaneia já cai no app com o usuário preenchido, só falta a senha.
-          O QR <b>não</b> carrega senha nenhuma — ele só diz de quem é o balcão.
+          O <b>QR code</b> de cada quiosque leva o cliente direto ao cardápio, <b>sem senha</b>.
+          Cole no balcão. O QR não carrega senha nenhuma — quem impede o pedido de longe
+          é a <b>área abaixo</b>.
         </div>
       </div>
+
+      <div id="cercoLagoa"></div>
 
       ${quiosques.length ? `<div class="lista-edit">${quiosques.map(function (q) {
         var partes = [];
@@ -1304,6 +1306,9 @@ window.PLAdmin = window.PLAdmin || {};
 
       if (acao === "folha") { folhaDeQrCodes(ativos); return; }
       if (acao === "qr" && q) { verQrCode(q); return; }
+      if (acao === "aqui")   { marcarLocalAtual(corpo); return; }
+      if (acao === "salvarCerco") { salvarCerco(corpo); return; }
+      if (acao === "limparCerco") { limparCerco(corpo); return; }
       if (acao === "novo") { formularioQuiosque(null, quiosques, function () { desenharQuiosques(corpo); }); return; }
       if (acao === "editar" && q) { formularioQuiosque(q, quiosques, function () { desenharQuiosques(corpo); }); return; }
 
@@ -1315,6 +1320,191 @@ window.PLAdmin = window.PLAdmin || {};
         desenharQuiosques(corpo);
       }
     });
+
+    desenharCerco(corpo);
+  }
+
+  // ==================================================================
+  //  A ÁREA DA LAGOA  (a trava do pedido pelo QR)
+  //  ------------------------------------------------------------------
+  //  Um QR fixo é um link impresso, e link se copia: quem escaneia pode
+  //  salvar e tentar pedir de casa. O celular manda a localização junto
+  //  com o pedido, e o BANCO confere se ela cai dentro deste círculo —
+  //  não é checagem de tela, que qualquer um contorna.
+  //
+  //  O jeito de marcar o ponto é o único que funciona sem mapa: o dono
+  //  abre isto aqui DE PÉ NA LAGOA e toca em "estou aqui agora".
+  // ==================================================================
+  function desenharCerco(corpo) {
+    var caixa = PL.$("#cercoLagoa", corpo);
+    if (!caixa) return;
+    var c = (PL.ctx && PL.ctx.cliente) || {};
+    var temPonto = c.geo_lat !== null && c.geo_lat !== undefined && c.geo_lat !== "";
+    var raio = Number(c.geo_radius_m) || 250;
+
+    caixa.innerHTML = `
+      <div class="card" style="padding:16px;margin-bottom:14px">
+        <h3 class="card-title">📍 Área de pedido pelo QR</h3>
+
+        ${temPonto ? `
+          <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
+            <div>
+              Ponto marcado: <b>${esc(Number(c.geo_lat).toFixed(5))}, ${esc(Number(c.geo_lng).toFixed(5))}</b>
+              · raio de <b>${esc(raio)} m</b>.<br>
+              Quem estiver fora disso não consegue enviar pedido pelo celular.
+            </div>
+          </div>` : `
+          <div class="aviso aviso-warn" style="font-weight:400;font-size:.88rem">
+            <div>
+              <b>A área ainda não foi marcada.</b> Enquanto isso, o pedido pelo QR
+              funciona de qualquer lugar. Abra esta tela <b>de pé na lagoa</b> e toque
+              no botão abaixo.
+            </div>
+          </div>`}
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+          <button type="button" class="btn btn-primary" data-acao="aqui" style="min-height:48px">
+            📍 Estou aqui agora — usar este ponto
+          </button>
+          ${temPonto ? `<button type="button" class="btn btn-danger btn-sm" data-acao="limparCerco"
+             style="min-height:48px">Desligar a trava</button>` : ""}
+        </div>
+        <p class="form-msg" id="cercoMsg" role="status"></p>
+
+        <div class="field-row">
+          <label class="field">
+            <span>Raio (metros)</span>
+            <input type="number" id="cercoRaio" min="30" max="5000" step="10" value="${esc(raio)}" />
+            <span class="field-hint">
+              Do centro até a cerca. 250 m cobre um sítio inteiro; menos que 100 m
+              começa a recusar cliente por causa da imprecisão do próprio GPS.
+            </span>
+          </label>
+          <label class="field">
+            <span>Máximo de pedidos por quiosque</span>
+            <input type="number" id="cercoTeto" min="1" max="60" step="1"
+                   value="${esc(Number(c.public_max_10min) || 10)}" />
+            <span class="field-hint">A cada 10 minutos. Freio contra brincadeira.</span>
+          </label>
+        </div>
+
+        <label class="switch" style="margin:6px 0">
+          <input type="checkbox" id="cercoLigado" ${c.public_orders_enabled === false ? "" : "checked"} />
+          <span class="trilho"></span>
+          <span>Aceitar pedidos pelo QR code</span>
+        </label>
+        <span class="field-hint" style="display:block;margin:-4px 0 10px">
+          Desligue para fechar o pedido pelo celular sem tirar os adesivos da parede.
+        </span>
+
+        <div class="campos-manuais" style="margin-bottom:12px">
+          <details>
+            <summary class="hint" style="cursor:pointer">Digitar as coordenadas à mão</summary>
+            <div class="field-row" style="margin-top:10px">
+              <label class="field">
+                <span>Latitude</span>
+                <input type="text" id="cercoLat" inputmode="decimal"
+                       value="${temPonto ? esc(c.geo_lat) : ""}" placeholder="-23.55052" />
+              </label>
+              <label class="field">
+                <span>Longitude</span>
+                <input type="text" id="cercoLng" inputmode="decimal"
+                       value="${temPonto ? esc(c.geo_lng) : ""}" placeholder="-46.63331" />
+              </label>
+            </div>
+            <span class="field-hint">
+              No Google Maps: clique com o botão direito no ponto da lagoa — os dois
+              números aparecem no topo do menu, prontos para copiar.
+            </span>
+          </details>
+        </div>
+
+        <button type="button" class="btn btn-primary" data-acao="salvarCerco" style="min-height:48px">
+          Salvar área
+        </button>
+      </div>`;
+  }
+
+  function marcarLocalAtual(corpo) {
+    var msg = PL.$("#cercoMsg", corpo);
+    if (msg) { msg.className = "form-msg"; msg.textContent = "Procurando o sinal do GPS…"; }
+
+    PL.ondeEstou().then(function (onde) {
+      if (!onde.lat) {
+        if (msg) {
+          msg.className = "form-msg";
+          msg.textContent = "Não consegui a localização. Permita o acesso no navegador " +
+            "e tente de novo — ou digite as coordenadas à mão.";
+        }
+        return;
+      }
+      var lat = PL.$("#cercoLat", corpo);
+      var lng = PL.$("#cercoLng", corpo);
+      if (lat) lat.value = onde.lat;
+      if (lng) lng.value = onde.lng;
+      if (msg) {
+        msg.className = "form-msg ok";
+        msg.textContent = "Ponto capturado (precisão de ~" + Math.round(onde.precisao || 0) +
+          " m). Confira o raio e toque em Salvar área.";
+      }
+      // se o GPS veio ruim, um raio apertado recusaria gente de pé no balcão
+      var raio = PL.$("#cercoRaio", corpo);
+      if (raio && onde.precisao > Number(raio.value)) {
+        raio.value = Math.ceil((onde.precisao * 2) / 10) * 10;
+      }
+    });
+  }
+
+  async function salvarCerco(corpo) {
+    var lat = val(corpo, "cercoLat").replace(",", ".");
+    var lng = val(corpo, "cercoLng").replace(",", ".");
+    var raio = Number(val(corpo, "cercoRaio")) || 0;
+    var teto = Number(val(corpo, "cercoTeto")) || 0;
+    var ligado = marcado(corpo, "cercoLigado");
+
+    if (raio < 30 || raio > 5000) { PL.aviso("O raio precisa ficar entre 30 e 5000 metros.", "avisa"); return; }
+    if (teto < 1) { PL.aviso("O máximo de pedidos precisa ser pelo menos 1.", "avisa"); return; }
+
+    var campos = {
+      geo_radius_m: Math.round(raio),
+      public_max_10min: Math.round(teto),
+      public_orders_enabled: ligado,
+    };
+
+    if (lat && lng) {
+      var nLat = Number(lat), nLng = Number(lng);
+      if (!isFinite(nLat) || !isFinite(nLng) || Math.abs(nLat) > 90 || Math.abs(nLng) > 180) {
+        PL.aviso("Coordenadas inválidas. Confira a latitude e a longitude.", "avisa");
+        return;
+      }
+      campos.geo_lat = nLat;
+      campos.geo_lng = nLng;
+      campos.geo_required = true;
+    }
+
+    await tentar(async function () {
+      await PL.backend.salvarCliente(campos);
+      atualizarClienteNaMemoria(campos);
+    }, "Área salva!");
+    desenharCerco(corpo);
+  }
+
+  async function limparCerco(corpo) {
+    var certeza = await PL.confirmar({
+      titulo: "Desligar a trava de localização",
+      texto: `Sem a área marcada, <b>qualquer pessoa que tenha o link consegue pedir de onde estiver</b> —
+              inclusive de casa, dias depois de escanear o adesivo.<br><br>
+              A recepção continua vendo todo pedido antes de lançar, mas ela passa a ser a única defesa.`,
+      ok: "Desligar mesmo assim", perigo: true,
+    });
+    if (!certeza) return;
+
+    var campos = { geo_lat: null, geo_lng: null, geo_required: false };
+    await tentar(async function () {
+      await PL.backend.salvarCliente(campos);
+      atualizarClienteNaMemoria(campos);
+    }, "Trava desligada.");
+    desenharCerco(corpo);
   }
 
   // ==================================================================
@@ -1330,8 +1520,19 @@ window.PLAdmin = window.PLAdmin || {};
     catch (e) { console.warn("QR:", e); return null; }
   }
 
+  // O QR do balcão leva o CÓDIGO do quiosque (?k=...), não o número:
+  // é ele que abre o cardápio direto para o cliente, sem senha. Um
+  // quiosque sem código ainda não passou pelo 07-pedido-publico.sql.
+  function linkDoCliente(q) {
+    return q.public_token ? PL.enderecoDoCliente(q.public_token) : null;
+  }
+
   function verQrCode(q) {
-    var url = PL.enderecoDoQuiosque(q.number);
+    var url = linkDoCliente(q);
+    if (!url) {
+      PL.aviso("Este quiosque ainda não tem código de QR. Rode o 07-pedido-publico.sql no Supabase.", "erro");
+      return;
+    }
     var svg = svgDoQr(url);
 
     if (!svg) {
@@ -1349,8 +1550,9 @@ window.PLAdmin = window.PLAdmin || {};
         </div>
         <div class="aviso aviso-info" style="font-weight:400;font-size:.86rem">
           <div>
-            Imprima, plastifique e cole no balcão. Quem escaneia abre o app já com
-            <b>quiosque${esc(q.number)}</b> preenchido — só falta a senha.
+            Imprima, plastifique e cole no balcão do <b>${esc(q.name || "Quiosque " + q.number)}</b>.
+            O cliente aponta a câmera e já cai no cardápio — <b>sem senha</b>.
+            O pedido só é aceito se ele estiver dentro da área da lagoa.
           </div>
         </div>`,
       botoes: [
@@ -1436,11 +1638,12 @@ window.PLAdmin = window.PLAdmin || {};
       "</div>" +
       '<div class="folha-qr-grade">' +
         lista.map(function (q) {
-          var svg = svgDoQr(PL.enderecoDoQuiosque(q.number));
+          var link = linkDoCliente(q);
+          var svg = link ? svgDoQr(link) : null;
           return '<div class="folha-qr-item">' +
-              (svg || '<div class="hint">QR indisponível</div>') +
+              (svg || '<div class="hint">sem código — rode o 07-pedido-publico.sql</div>') +
               "<b>" + esc(q.name || "Quiosque " + q.number) + "</b>" +
-              "<span>Aponte a câmera para fazer o pedido</span>" +
+              "<span>Aponte a câmera para fazer o seu pedido</span>" +
             "</div>";
         }).join("") +
       "</div>";
