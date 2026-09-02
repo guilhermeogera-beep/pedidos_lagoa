@@ -91,6 +91,6 @@ window.PEDIDOS_CONFIG = {
   //  Enquanto estiverem vazios, o app abre em MODO DEMONSTRAÇÃO: dá para
   //  navegar por todas as telas com dados de mentira, sem banco nenhum.
   // ------------------------------------------------------------------
-  supabaseUrl: "",
-  supabaseAnonKey: "",
+  supabaseUrl: "https://jyrewatsfgficuzumuli.supabase.co",
+  supabaseAnonKey: "sb_publishable_hvqRv057_VMXoFYcrqqBQA_Eyj1G08s",
 };
