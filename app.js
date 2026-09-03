@@ -85,6 +85,80 @@
 
   function aguarde(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+  // "11:00:00" ou "11:00" → minutos desde a meia-noite
+  function minutosDaHora(hora) {
+    const m = String(hora || "").match(/^(\d{1,2}):(\d{2})/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  }
+
+  // Que horas são agora no relógio DA CASA (e não no do tablet, que pode
+  // estar com o fuso trocado).
+  function relogioDaCasa(fuso) {
+    try {
+      const partes = {};
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: fuso || "America/Sao_Paulo",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).formatToParts(new Date()).forEach((p) => { partes[p.type] = p.value; });
+      return Number(partes.hour) * 60 + Number(partes.minute);
+    } catch (e) {
+      const d = new Date();
+      return d.getHours() * 60 + d.getMinutes();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  //  A CONTA ABERTA DE CADA QUIOSQUE  (o "turno")
+  //  ------------------------------------------------------------------
+  //  Tem dia com pesca de dia e pesca de noite: o mesmo quiosque troca de
+  //  gente, e a conta de quem foi embora não pode aparecer para quem
+  //  chegou. A conta zera de dois jeitos:
+  //     · a recepção encerra na mão (botão que aparece a partir das 18h)
+  //     · sozinha, quando passa a hora de virada (04:00 por padrão)
+  //  Vale sempre a MAIS RECENTE das duas.
+  //
+  //  A hora de virada é 04:00 e não meia-noite de propósito: pescaria que
+  //  vai até as 2h da manhã ainda é a mesma noite, e a conta não pode
+  //  virar no meio dela.
+  // ------------------------------------------------------------------
+  function ultimaViradaAutomatica(cliente) {
+    const c = cliente || {};
+    const corte = minutosDaHora(c.sessao_zera_as);
+    if (corte === null) return 0;
+    const agora = relogioDaCasa(c.timezone);
+    // quantos minutos se passaram desde a última vez que o relógio da casa
+    // cruzou aquela hora (se ainda não cruzou hoje, foi ontem)
+    const desde = ((agora - corte) + 1440) % 1440;
+    // Os segundos do relógio saem da conta de propósito: sem isso a
+    // fronteira do turno andaria um pouquinho a cada chamada, e um pedido
+    // feito exatamente na virada entraria ou sairia da conta conforme a
+    // hora em que a tela foi desenhada.
+    const agoraMs = Date.now();
+    return (agoraMs - (agoraMs % 60000)) - desde * 60000;
+  }
+
+  function inicioDaSessao(quiosque) {
+    const manual = quiosque && quiosque.session_started_at
+      ? new Date(quiosque.session_started_at).getTime() : 0;
+    return Math.max(manual || 0, ultimaViradaAutomatica(ctx && ctx.cliente));
+  }
+
+  // Já passou da hora em que o botão "encerrar contas" deve aparecer?
+  function horaDeEncerrar() {
+    const c = (ctx && ctx.cliente) || {};
+    const corte = minutosDaHora(c.turno_botao_das);
+    if (corte === null) return false;
+    return relogioDaCasa(c.timezone) >= corte;
+  }
+
+  // Os pedidos que contam para a conta aberta daquele quiosque.
+  function pedidosDaSessao(quiosque) {
+    const desde = inicioDaSessao(quiosque);
+    const id = quiosque && quiosque.id;
+    return (pedidos || []).filter((p) =>
+      (!id || p.kiosk_id === id) && new Date(p.created_at).getTime() >= desde);
+  }
+
   function adiar(fn, ms) {
     let t = null;
     return function () {
@@ -279,6 +353,15 @@
     if (/JWT|token|expired/i.test(t)) return "A sessão expirou. Entre de novo.";
     if (/permission denied|42501|row-level security/i.test(t)) return "Este perfil não tem permissão para isso.";
     if (/duplicate key|already exists/i.test(t)) return "Já existe um registro com esse nome.";
+    // Função ou coluna que o app usa mas que o banco ainda não tem: quase
+    // sempre é um arquivo SQL que ficou para trás. Dizer isso em português
+    // poupa meia hora de procura.
+    if (/Could not find the (function|table)|PGRST20[25]/i.test(t)) {
+      return "Falta rodar um arquivo SQL no Supabase — este recurso ainda não existe no banco.";
+    }
+    if (/column .* does not exist|42703/i.test(t)) {
+      return "O banco está numa versão anterior à do aplicativo. Rode os arquivos SQL que faltam.";
+    }
     return t || "Não deu certo.";
   }
 
@@ -460,6 +543,14 @@
         return ok(sb.rpc("ack_orders", { p_ids: ids }));
       },
 
+      // Encerra a conta dos quiosques escolhidos. Quem nao veio na lista
+      // continua como esta — e assim o quiosque que vira a noite mantem a
+      // conta aberta.
+      async fecharSessoes(ids) {
+        if (!ids || !ids.length) return 0;
+        return ok(sb.rpc("fechar_sessao_quiosques", { p_ids: ids }));
+      },
+
       async disponibilidade(produtoId, disponivel) {
         return ok(sb.rpc("set_product_availability", { p_id: produtoId, p_available: disponivel }));
       },
@@ -637,6 +728,7 @@
       },
 
       async marcarVistos() { return 0; },
+      async fecharSessoes() { throw new Error("Sem permissão."); },
       async disponibilidade() { throw new Error("Sem permissão."); },
       async salvar() { throw new Error("Sem permissão."); },
       async remover() { throw new Error("Sem permissão."); },
@@ -904,6 +996,17 @@
         (ids || []).forEach((id) => {
           const p = b.pedidos.find((x) => x.id === id);
           if (p && !p.ack_at) p.ack_at = new Date().toISOString();
+        });
+        gravar(b);
+        return (ids || []).length;
+      },
+
+      async fecharSessoes(ids) {
+        const b = ler();
+        const agora = new Date().toISOString();
+        (ids || []).forEach((id) => {
+          const k = b.quiosques.find((x) => x.id === id);
+          if (k) k.session_started_at = agora;
         });
         gravar(b);
         return (ids || []).length;
@@ -1441,6 +1544,10 @@
 
     // atalhos
     $, $$, esc, dinheiro, minutosDesde, tempoCurto, hora, hojeNoFuso, aguarde, adiar,
+
+    // a conta aberta de cada quiosque (o "turno")
+    inicioDaSessao, pedidosDaSessao, horaDeEncerrar,
+    minutosDaHora, relogioDaCasa,
 
     // links do QR code (ver "OS DOIS TIPOS DE LINK DO QUIOSQUE")
     get quiosqueDoLink() { return quiosqueDoLink; },

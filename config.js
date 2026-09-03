@@ -53,7 +53,10 @@ window.PEDIDOS_CONFIG = {
   //  TELA DO QUIOSQUE
   // ------------------------------------------------------------------
   pedirNomeCliente: false,   // pede o nome de quem está pedindo
-  pedirLugar: true,          // pede "guarda-sol / mesa" no envio do pedido
+  // O quiosque já diz onde entregar, então perguntar o guarda-sol era um
+  // campo a mais para ninguém preencher. Ligue de novo se um dia a casa
+  // ficar grande a ponto de o quiosque não bastar.
+  pedirLugar: false,         // pede "guarda-sol / mesa" no envio do pedido
   rotuloLugar: "Guarda-sol / mesa",
   obsPorItem: true,          // permite observação em cada item ("sem cebola")
   mostrarPreco: true,        // mostra os preços no cardápio do quiosque

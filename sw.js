@@ -21,18 +21,18 @@
      tablets podem continuar com a versão antiga por dias.
    ============================================================ */
 
-const CACHE = "pedidos-lagoa-v4";
+const CACHE = "pedidos-lagoa-v5";
 
 const SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=4",
-  "./config.js?v=4",
-  "./qr.js?v=4",
-  "./app.js?v=4",
-  "./quiosque.js?v=4",
-  "./recepcao.js?v=4",
-  "./admin.js?v=4",
+  "./styles.css?v=5",
+  "./config.js?v=5",
+  "./qr.js?v=5",
+  "./app.js?v=5",
+  "./quiosque.js?v=5",
+  "./recepcao.js?v=5",
+  "./admin.js?v=5",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

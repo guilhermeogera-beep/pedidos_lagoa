@@ -71,6 +71,19 @@ window.PLAdmin = window.PLAdmin || {};
     return isFinite(n) && n > 0 ? Math.round(n * 100) : 0;
   }
 
+  // O Postgres devolve a hora como "11:00:00"; o <input type="time"> só
+  // aceita "11:00". Vazio continua vazio (produto sem janela de horário).
+  function horaCurtaDoBanco(h) {
+    var m = String(h || "").match(/^(\d{2}):(\d{2})/);
+    return m ? m[1] + ":" + m[2] : "";
+  }
+
+  // "11:00:00" -> "11h" | "11:30:00" -> "11h30"
+  function horaBonita(h) {
+    var m = String(h || "").match(/^(\d{1,2}):(\d{2})/);
+    return m ? m[1].padStart(2, "0") + "h" + (m[2] === "00" ? "" : m[2]) : "";
+  }
+
   // A "chave" da aba é gerada do nome: minúsculo, sem acento, sem espaço.
   // Ela vai junto com cada item vendido (order_items.section_key), por isso
   // nasce aqui uma vez e nunca mais muda.
@@ -375,6 +388,9 @@ window.PLAdmin = window.PLAdmin || {};
         var marcas = [];
         if (!p.active) marcas.push("escondido do cardápio");
         if (!p.available) marcas.push("marcado como acabou");
+        if (p.available_from && p.available_to) {
+          marcas.push("só das " + horaBonita(p.available_from) + " às " + horaBonita(p.available_to));
+        }
         return linhaEdit({
           id: p.id,
           inativo: !p.active,
@@ -480,6 +496,23 @@ window.PLAdmin = window.PLAdmin || {};
           <input type="url" id="pFoto" value="${esc(p.image_url || "")}" placeholder="https://…/tilapia.jpg" />
           <span class="field-hint">Cole o endereço de uma imagem que já esteja na internet.</span>
         </label>
+
+        <div class="field-row">
+          <label class="field">
+            <span>Só pode pedir a partir de</span>
+            <input type="time" id="pDe" value="${esc(horaCurtaDoBanco(p.available_from))}" />
+          </label>
+          <label class="field">
+            <span>Até</span>
+            <input type="time" id="pAte" value="${esc(horaCurtaDoBanco(p.available_to))}" />
+          </label>
+        </div>
+        <span class="field-hint" style="display:block;margin:-6px 0 4px">
+          Deixe os dois <b>vazios</b> para vender o dia inteiro — é o caso da maioria.
+          Fora da janela o item continua no cardápio, apagado e com o horário escrito:
+          assim ninguém acha que acabou. Uma janela que passa da meia-noite
+          (18:00 às 02:00) também funciona.
+        </span>
         <label class="switch">
           <input type="checkbox" id="pAtivo"${novo || p.active ? " checked" : ""} />
           <span class="trilho"></span>
@@ -505,7 +538,15 @@ window.PLAdmin = window.PLAdmin || {};
           image_url: val(corpo, "pFoto") || null,
           active: marcado(corpo, "pAtivo"),
           available: marcado(corpo, "pDisponivel"),
+          // Os dois andam juntos: só um deles preenchido não é uma janela,
+          // é um campo esquecido pela metade — e viraria "sem horário".
+          available_from: val(corpo, "pDe") || null,
+          available_to: val(corpo, "pAte") || null,
         };
+        if (!linha.available_from || !linha.available_to) {
+          linha.available_from = null;
+          linha.available_to = null;
+        }
         if (novo) linha.sort_order = proximaOrdem(PL.catalogo.produtos.filter(function (x) { return x.section_id === secao.id; }));
         else linha.id = p.id;
 

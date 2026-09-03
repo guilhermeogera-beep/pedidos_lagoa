@@ -143,10 +143,74 @@
     return (PL.catalogo.produtos || []).filter(function (p) { return p.id === id; })[0] || null;
   }
 
+  // ==================================================================
+  //  HORÁRIO DO PRODUTO
+  //  Prato que só sai das 11h às 15h some do alcance fora desse
+  //  intervalo. O cartão CONTINUA na tela, apagado e com o horário
+  //  escrito — sumir seria pior: o cliente acharia que acabou, e o
+  //  garçom procuraria um item que existe.
+  //
+  //  A conta é feita com a HORA DA CASA, não com a do celular: um
+  //  aparelho com o fuso trocado liberaria (ou barraria) na hora errada.
+  //  De todo jeito, quem decide de verdade é o banco — isto aqui é só
+  //  para a tela não oferecer o que vai ser recusado.
+  // ==================================================================
+  function horaDaCasa() {
+    var fuso = (PL.ctx.cliente && PL.ctx.cliente.timezone) || "America/Sao_Paulo";
+    try {
+      var f = new Intl.DateTimeFormat("pt-BR", {
+        timeZone: fuso, hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(new Date());
+      var m = f.match(/(\d{1,2}):(\d{2})/);
+      return m ? Number(m[1]) * 60 + Number(m[2]) : new Date().getHours() * 60 + new Date().getMinutes();
+    } catch (e) {
+      return new Date().getHours() * 60 + new Date().getMinutes();
+    }
+  }
+
+  // "11:00:00" ou "11:00" -> minutos desde a meia-noite
+  function emMinutos(hora) {
+    var m = String(hora || "").match(/^(\d{1,2}):(\d{2})/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  }
+
+  function horaCurta(hora) {
+    var m = String(hora || "").match(/^(\d{1,2}):(\d{2})/);
+    return m ? m[1].padStart(2, "0") + "h" + (m[2] === "00" ? "" : m[2]) : "";
+  }
+
+  function noHorario(p) {
+    var de = emMinutos(p.available_from);
+    var ate = emMinutos(p.available_to);
+    if (de === null || ate === null || de === ate) return true;   // sem janela
+    var agora = horaDaCasa();
+    // janela que passa da meia-noite (18:00 às 02:00) é normal à noite
+    return de < ate ? (agora >= de && agora < ate) : (agora >= de || agora < ate);
+  }
+
+  function janelaDoProduto(p) {
+    var de = horaCurta(p.available_from), ate = horaCurta(p.available_to);
+    return de && ate ? de + " às " + ate : "";
+  }
+
   function quiosquesAtivos() {
     return (PL.catalogo.quiosques || [])
       .filter(function (q) { return q.active !== false; })
       .sort(function (a, b) { return (a.number || 0) - (b.number || 0); });
+  }
+
+  // O quiosque desta tela: o do próprio perfil, ou o que o admin escolheu.
+  // É dele que sai a hora em que a conta aberta começou.
+  function quiosqueAtual() {
+    if (PL.ctx.quiosque) {
+      // o objeto do catálogo é o que carrega o session_started_at atualizado
+      var doCatalogo = (PL.catalogo.quiosques || []).filter(function (q) {
+        return q.id === PL.ctx.quiosque.id;
+      })[0];
+      return doCatalogo || PL.ctx.quiosque;
+    }
+    var id = quiosqueDoPedido();
+    return id ? (PL.catalogo.quiosques || []).filter(function (q) { return q.id === id; })[0] || null : null;
   }
 
   // ==================================================================
@@ -184,11 +248,13 @@
     var antes = carrinho.length;
     carrinho = carrinho.filter(function (l) {
       var p = produtoPorId(l.product_id);
-      return p && p.active !== false && p.available !== false;
+      // fora de hora entra aqui também: o carrinho pode ter ficado aberto
+      // desde o almoço, e às 15h01 aquele prato deixa de ser aceito
+      return p && p.active !== false && p.available !== false && noHorario(p);
     });
     if (carrinho.length !== antes) {
       gravarCarrinho();
-      PL.aviso("Tirei do pedido um item que saiu do cardápio.", "avisa");
+      PL.aviso("Tirei do pedido um item que saiu do cardápio ou passou do horário.", "avisa");
     }
   }
 
@@ -228,6 +294,12 @@
     // pedido de produto desligado, então nem deixamos chegar lá.
     if (p.active === false) {
       PL.aviso("Este item está oculto do cardápio e não pode ser pedido.", "avisa");
+      return;
+    }
+    // Fora do horário: o banco também recusa, mas explicar aqui é melhor do
+    // que deixar montar o pedido inteiro para ele voltar com erro no fim.
+    if (!noHorario(p)) {
+      PL.aviso(p.name + " só pode ser pedido das " + janelaDoProduto(p) + ".", "avisa");
       return;
     }
 
@@ -475,11 +547,13 @@
   function cartaoProduto(p, secao) {
     var esgotado = p.available === false;
     var oculto = p.active === false;
+    var foraDeHora = !noHorario(p);
     var qtd = qtdNoCarrinho(p.id);
 
-    // .esgotado deixa o cartão apagado; serve igualmente para o item oculto,
-    // porque nos dois casos ele está na tela só como informação.
-    var classes = "produto" + (esgotado || oculto ? " esgotado" : "");
+    // .esgotado deixa o cartão apagado; serve igualmente para o item oculto
+    // e para o que está fora de hora, porque nos três casos ele está na tela
+    // só como informação.
+    var classes = "produto" + (esgotado || oculto || foraDeHora ? " esgotado" : "");
 
     var foto = p.image_url
       ? '<img class="produto-foto" src="' + PL.esc(p.image_url) + '" alt="" loading="lazy">'
@@ -487,7 +561,8 @@
 
     var selo = oculto
       ? '<span class="selo-oculto">Oculto</span>'
-      : (esgotado ? '<span class="selo-esgotado">Esgotado</span>' : "");
+      : (esgotado ? '<span class="selo-esgotado">Esgotado</span>'
+        : (foraDeHora ? '<span class="selo-horario">🕐 ' + PL.esc(janelaDoProduto(p)) + "</span>" : ""));
 
     var preco = mostraPreco()
       ? '<span><span class="produto-preco">' + PL.dinheiro(p.price_cents) + "</span> " +
@@ -903,10 +978,18 @@
   // A RLS do banco já entrega só os pedidos deste quiosque. Para o ADMIN,
   // que enxerga tudo, valem os pedidos do quiosque que ele escolheu lá no
   // cardápio — senão esta tela viraria uma cópia do quadro da recepção.
+  //
+  // E só entram os da CONTA ABERTA: quando a recepção encerra o turno (ou
+  // quando passa a hora da virada), o pescador que chega não pode ver o
+  // consumo de quem estava aqui antes dele.
   function meusPedidos() {
     var meu = (PL.ctx.perfil && PL.ctx.perfil.kiosk_id) || quiosqueDoPedido();
+    var quiosque = quiosqueAtual();
+    var desde = quiosque ? PL.inicioDaSessao(quiosque) : 0;
+
     var lista = (PL.pedidos || []).filter(function (p) {
-      return !meu || p.kiosk_id === meu;
+      if (meu && p.kiosk_id !== meu) return false;
+      return new Date(p.created_at).getTime() >= desde;
     });
 
     // Abertos primeiro (é o que o quiosque está esperando), e dentro de cada

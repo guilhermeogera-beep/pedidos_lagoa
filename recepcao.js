@@ -164,7 +164,7 @@
       return botao("btn-neutral btn-sm", "↺ Reabrir", 'data-ir="recebido" data-confirmar="1"');
     }
     return botao("btn-ok", "✅ Lancei o pedido", 'data-ir="lancado"') +
-           botao("btn-danger btn-sm", "⚠ Deu problema", 'data-erro="1"');
+           botao("btn-danger btn-sm", "⚠ Cancelar", 'data-erro="1"');
   }
 
   function linhaDoItem(it) {
@@ -294,6 +294,7 @@
               opcoesDeQuiosque(filtros.quiosque) + "</select>" +
             switchSom +
             '<button type="button" class="btn btn-sm btn-outline" id="pdImprimir">🖨️ Imprimir</button>' +
+            '<button type="button" class="btn btn-sm btn-accent" id="pdEncerrar" hidden>🔄 Encerrar contas</button>' +
           "</div>" +
         "</div>" +
         '<p class="hint" id="pdResumo"></p>' +
@@ -323,8 +324,157 @@
       });
     }
     PL.$("#pdImprimir", caixa).addEventListener("click", function () { window.print(); });
+    PL.$("#pdEncerrar", caixa).addEventListener("click", abrirEncerrarContas);
 
     desenharPedidos();
+    atualizarBotaoEncerrar();
+  }
+
+  // ==================================================================
+  //  ENCERRAR AS CONTAS DOS QUIOSQUES  (a virada do turno)
+  //  ------------------------------------------------------------------
+  //  Tem dia com pesca de dia e pesca de noite: o mesmo quiosque troca de
+  //  gente. A conta de quem foi embora não pode aparecer para quem chega.
+  //
+  //  O botão aparece a partir da hora configurada (18h por padrão). Por
+  //  padrão ele encerra TODAS as contas — e a recepção marca as exceções,
+  //  os quiosques que vão virar a noite. É de propósito nessa ordem: quem
+  //  esquece de marcar termina com o quadro limpo, que é o erro barato.
+  //  O contrário deixaria a conta do almoço na mão de quem chegou à noite.
+  //
+  //  E se ninguém tocar em nada, tudo zera sozinho na hora da virada.
+  // ==================================================================
+  function atualizarBotaoEncerrar() {
+    var b = PL.$("#pdEncerrar", caixaPedidos || document);
+    if (!b) return;
+    b.hidden = !PL.horaDeEncerrar();
+  }
+
+  function abrirEncerrarContas() {
+    var quiosques = ((PL.catalogo && PL.catalogo.quiosques) || [])
+      .filter(function (q) { return q.active !== false; })
+      .slice()
+      .sort(function (a, b) { return (Number(a.number) || 0) - (Number(b.number) || 0); });
+
+    if (!quiosques.length) {
+      PL.aviso("Nenhum quiosque ativo.", "avisa");
+      return;
+    }
+
+    // o que cada quiosque consumiu na conta que está aberta agora
+    var linhas = quiosques.map(function (q) {
+      var doTurno = PL.pedidosDaSessao(q);
+      var valem = doTurno.filter(function (p) { return p.status !== "cancelado" && p.status !== "erro"; });
+      return {
+        q: q,
+        pedidos: valem.length,
+        abertos: doTurno.filter(ehAberto).length,
+        total: valem.reduce(function (s, p) { return s + (Number(p.total_cents) || 0); }, 0),
+        desde: PL.inicioDaSessao(q),
+      };
+    });
+
+    var comMovimento = linhas.filter(function (l) { return l.pedidos > 0; });
+
+    var html =
+      '<p class="hint" style="margin:0;line-height:1.6">' +
+        "Encerrar a conta zera o que o quiosque consumiu — o novo pescador começa do zero. " +
+        "<b>Marque abaixo só os quiosques que vão continuar a pescaria</b>; o resto é encerrado." +
+      "</p>" +
+      (comMovimento.length
+        ? '<div class="lista-edit">' + linhas.map(function (l) {
+            var vazio = l.pedidos === 0;
+            return '<div class="le' + (vazio ? " inativo" : "") + '" data-id="' + PL.esc(l.q.id) + '">' +
+                '<div class="le-info">' +
+                  '<div class="le-nome"><b>#' + PL.esc(l.q.number) + "</b> " + PL.esc(l.q.name) + "</div>" +
+                  '<div class="le-sub">' +
+                    (vazio ? "sem consumo nesta conta"
+                           : l.pedidos + (l.pedidos === 1 ? " pedido · " : " pedidos · ") +
+                             PL.dinheiro(l.total) +
+                             (l.abertos ? " · ⚠ " + l.abertos + " ainda a lançar" : "")) +
+                    " · desde " + PL.esc(PL.hora(new Date(l.desde).toISOString())) +
+                  "</div>" +
+                "</div>" +
+                '<div class="le-acoes">' +
+                  '<label class="switch" title="Este quiosque continua a pescaria">' +
+                    '<input type="checkbox" data-continua="' + PL.esc(l.q.id) + '" />' +
+                    '<span class="trilho"></span><span>Continua</span>' +
+                  "</label>" +
+                "</div>" +
+              "</div>";
+          }).join("") + "</div>"
+        : '<div class="vazio"><b>Nenhum quiosque com consumo.</b>Não há conta para encerrar agora.</div>') +
+      '<p class="form-msg" id="encMsg" role="status"></p>';
+
+    PL.modal({
+      titulo: "🔄 Encerrar as contas dos quiosques",
+      larga: true,
+      corpo: html,
+      botoes: [
+        { texto: "Voltar", classe: "btn-neutral" },
+        { texto: "Encerrar as contas", classe: "btn-accent", id: "encOk",
+          acao: function (fechar, api) { confirmarEncerramento(linhas, fechar, api); } },
+      ],
+      aoAbrir: function (corpo, api) {
+        function contar() {
+          var continuam = PL.$$("[data-continua]", corpo).filter(function (i) { return i.checked; }).length;
+          var fecham = linhas.length - continuam;
+          var bt = api.fundo.querySelector("#encOk");
+          if (bt) {
+            bt.textContent = fecham
+              ? "Encerrar " + fecham + (fecham === 1 ? " conta" : " contas")
+              : "Nenhuma para encerrar";
+            bt.disabled = fecham === 0;
+          }
+        }
+        corpo.addEventListener("change", contar);
+        contar();
+      },
+    });
+  }
+
+  async function confirmarEncerramento(linhas, fechar, api) {
+    var corpo = api.corpo;
+    var continuam = {};
+    PL.$$("[data-continua]", corpo).forEach(function (i) {
+      if (i.checked) continuam[i.getAttribute("data-continua")] = true;
+    });
+
+    var vaoFechar = linhas.filter(function (l) { return !continuam[l.q.id]; });
+    if (!vaoFechar.length) return;
+
+    // Conta ainda com pedido não lançado é sinal de gente esperando comida.
+    // Encerrar sem avisar seria o pior tipo de silêncio.
+    var pendentes = vaoFechar.filter(function (l) { return l.abertos > 0; });
+    if (pendentes.length) {
+      var certeza = await PL.confirmar({
+        titulo: "Tem pedido esperando",
+        texto: pendentes.map(function (l) {
+          return "<b>" + PL.esc(l.q.name) + "</b>: " + l.abertos +
+            (l.abertos === 1 ? " pedido ainda não lançado" : " pedidos ainda não lançados");
+        }).join("<br>") +
+        "<br><br>Eles <b>continuam no quadro</b> depois de encerrar a conta — não somem. " +
+        "Mas confira se não há alguém esperando antes de virar o turno.",
+        ok: "Encerrar mesmo assim", cancelar: "Voltar e resolver", perigo: true,
+      });
+      if (!certeza) return;
+    }
+
+    var bt = api.fundo.querySelector("#encOk");
+    if (bt) { bt.disabled = true; bt.textContent = "Encerrando…"; }
+
+    try {
+      await PL.backend.fecharSessoes(vaoFechar.map(function (l) { return l.q.id; }));
+      await PL.recarregarCatalogo();
+      await PL.recarregarPedidos();
+      fechar();
+      PL.aviso(vaoFechar.length + (vaoFechar.length === 1 ? " conta encerrada." : " contas encerradas."), "ok");
+    } catch (e) {
+      console.error("Encerrar contas:", e);
+      var msg = PL.$("#encMsg", corpo);
+      if (msg) msg.textContent = PL.erroLegivel(e);
+      if (bt) { bt.disabled = false; bt.textContent = "Encerrar as contas"; }
+    }
   }
 
   function desenharPedidos() {
@@ -647,41 +797,39 @@
         '<input type="text" id="mtLivre" maxlength="140" placeholder="ex.: veio pedido do quiosque errado" />' +
       "</label>" +
       '<p class="hint" style="margin:0;line-height:1.5">' +
-        "<b>Pediu errado</b> é quando já houve gasto — o produto foi aberto ou preparado. " +
-        "<b>Cancelar</b> é quando <b>nada</b> foi feito ainda, então não houve prejuízo. " +
-        "Os dois somem da fila; a diferença aparece no relatório." +
+        "O motivo é <b>obrigatório</b> e vai junto com o pedido: o quiosque enxerga " +
+        "o que você escreveu, e ele entra no relatório do fim do dia. Sem motivo, " +
+        "ninguém consegue explicar depois por que aquele pedido não saiu." +
       "</p>";
 
     PL.modal({
-      titulo: "⚠ Deu problema neste pedido",
+      titulo: "⚠ Cancelar este pedido",
       corpo: html,
       botoes: [
         { texto: "Voltar", classe: "btn-neutral" },
-        { texto: "Cancelar o pedido", classe: "btn-neutral", id: "mtCancelar",
+        // Um botão só. Antes eram dois ("pediu errado" e "cancelar") e a
+        // recepção tinha que escolher entre os dois no meio do movimento —
+        // sendo que o MOTIVO conta essa história melhor do que o rótulo.
+        { texto: "Escolha o motivo", classe: "btn-danger", id: "mtConfirmar",
           acao: function (fechar) {
             if (!escolhido) return;
             fechar();
             aplicarStatus(p, "cancelado", escolhido, cartao);
           } },
-        { texto: "Pediu errado", classe: "btn-danger", id: "mtErro",
-          acao: function (fechar) {
-            if (!escolhido) return;
-            fechar();
-            aplicarStatus(p, "erro", escolhido, cartao);
-          } },
       ],
       aoAbrir: function (corpo, api) {
-        var btErro = api.fundo.querySelector("#mtErro");
-        var btCancelar = api.fundo.querySelector("#mtCancelar");
+        var btConfirmar = api.fundo.querySelector("#mtConfirmar");
         var livre = PL.$("#mtLivre", corpo);
 
+        // O botão nasce travado e só acorda quando existe um motivo — e o
+        // próprio texto dele diz o que falta. É mais honesto do que deixar
+        // clicar para reclamar depois.
         function conferir() {
           var pode = !!escolhido;
-          [btErro, btCancelar].forEach(function (b) {
-            if (!b) return;
-            b.disabled = !pode;
-            b.classList.toggle("disabled", !pode);
-          });
+          if (!btConfirmar) return;
+          btConfirmar.disabled = !pode;
+          btConfirmar.classList.toggle("disabled", !pode);
+          btConfirmar.textContent = pode ? "Confirmar cancelamento" : "Escolha o motivo";
         }
         conferir();
 
@@ -930,17 +1078,246 @@
     if (telaViva) desenharPedidos();
     else if (PL.ehEquipe()) atualizarContadorDoTopo(contarAbertos().abertos);
     if (histViva) desenharHistorico();
+    if (quiosquesViva) desenharQuiosques();
   });
 
   PL.ao("tique", function () {
-    if (telaViva) atualizarRelogios();
+    if (!telaViva) return;
+    atualizarRelogios();
+    // o botão de encerrar contas nasce sozinho quando dá a hora
+    atualizarBotaoEncerrar();
   });
 
   // Quiosque novo, ou quiosque renomeado, muda o texto dos cartões.
   PL.ao("catalogo", function () {
     if (telaViva) desenharPedidos();
     if (histViva) desenharHistorico();
+    if (quiosquesViva) desenharQuiosques();
   });
+
+  // ==================================================================
+  //  TELA "QUIOSQUES" — a conta aberta de cada um
+  //  ------------------------------------------------------------------
+  //  Cada quiosque tem uma CONTA: tudo o que foi pedido desde que o
+  //  pescador chegou. Quando ele vai embora, a recepção abre a conta,
+  //  confere item por item (dá para imprimir e entregar na mão) e fecha.
+  //  Fechar zera: quem chegar depois começa do zero.
+  //
+  //  Isso não espera as 18h. Pescador que vai embora às duas da tarde
+  //  tem a conta fechada às duas da tarde — a virada do turno é só o
+  //  atalho para fechar várias de uma vez no fim do dia.
+  // ==================================================================
+  var caixaQuiosques = null;
+  var quiosquesViva = false;
+
+  function contaDoQuiosque(q) {
+    var doTurno = PL.pedidosDaSessao(q);
+    var valem = doTurno.filter(function (p) {
+      return p.status !== "cancelado" && p.status !== "erro";
+    });
+    return {
+      q: q,
+      desde: PL.inicioDaSessao(q),
+      pedidos: valem,
+      cancelados: doTurno.length - valem.length,
+      abertos: doTurno.filter(ehAberto).length,
+      itens: valem.reduce(function (s, p) { return s + (Number(p.items_count) || 0); }, 0),
+      total: valem.reduce(function (s, p) { return s + (Number(p.total_cents) || 0); }, 0),
+    };
+  }
+
+  function montarQuiosques(caixa) {
+    quiosquesViva = true;
+    caixaQuiosques = caixa;
+
+    caixa.innerHTML =
+      '<section class="card">' +
+        '<div class="card-head">' +
+          '<h1 class="card-title">🏖️ Contas dos quiosques</h1>' +
+          '<div class="filtros">' +
+            '<button type="button" class="btn btn-sm btn-accent" id="qkEncerrar">🔄 Fechar várias</button>' +
+          "</div>" +
+        "</div>" +
+        '<p class="hint">Toque num quiosque para ver a conta dele e fechar quando o pescador for embora.</p>' +
+      "</section>" +
+      '<div id="qkGrade"></div>';
+
+    caixa.removeEventListener("click", cliqueNosQuiosques);
+    caixa.addEventListener("click", cliqueNosQuiosques);
+    PL.$("#qkEncerrar", caixa).addEventListener("click", abrirEncerrarContas);
+
+    desenharQuiosques();
+  }
+
+  function cliqueNosQuiosques(ev) {
+    var alvo = ev.target.closest("[data-quiosque]");
+    if (!alvo) return;
+    var q = ((PL.catalogo && PL.catalogo.quiosques) || [])
+      .filter(function (x) { return x.id === alvo.getAttribute("data-quiosque"); })[0];
+    if (q) abrirConta(q);
+  }
+
+  function desenharQuiosques() {
+    if (!caixaQuiosques) return;
+    var grade = PL.$("#qkGrade", caixaQuiosques);
+    if (!grade) return;
+
+    var lista = ((PL.catalogo && PL.catalogo.quiosques) || [])
+      .filter(function (q) { return q.active !== false; })
+      .slice()
+      .sort(function (a, b) { return (Number(a.number) || 0) - (Number(b.number) || 0); })
+      .map(contaDoQuiosque);
+
+    if (!lista.length) {
+      grade.innerHTML = '<div class="vazio"><b>Nenhum quiosque ativo.</b>Cadastre os quiosques na engrenagem.</div>';
+      return;
+    }
+
+    grade.innerHTML = '<div class="quiosques-grade">' + lista.map(function (c) {
+      var vazio = !c.pedidos.length;
+      return '<button type="button" class="quiosque-card' +
+          (vazio ? " vazio" : "") + (c.abertos ? " tem-aberto" : "") +
+          '" data-quiosque="' + PL.esc(c.q.id) + '">' +
+          '<div class="qk-topo">' +
+            '<span class="qk-num">#' + PL.esc(c.q.number) + "</span>" +
+            (c.abertos ? '<span class="qk-sino">🔔 ' + c.abertos + "</span>" : "") +
+          "</div>" +
+          '<div class="qk-nome">' + PL.esc(c.q.name) + "</div>" +
+          '<div class="qk-total">' + (vazio ? "—" : PL.dinheiro(c.total)) + "</div>" +
+          '<div class="qk-sub">' +
+            (vazio
+              ? "conta zerada"
+              : c.pedidos.length + (c.pedidos.length === 1 ? " pedido" : " pedidos") +
+                " · desde " + PL.esc(PL.hora(new Date(c.desde).toISOString()))) +
+          "</div>" +
+        "</button>";
+    }).join("") + "</div>";
+  }
+
+  // ---- a conta, item por item ----
+  function linhasDaConta(c) {
+    if (!c.pedidos.length) return [];
+    return c.pedidos.slice().sort(function (a, b) {
+      return (a.daily_number || 0) - (b.daily_number || 0);
+    });
+  }
+
+  function abrirConta(q) {
+    var c = contaDoQuiosque(q);
+    var pedidos = linhasDaConta(c);
+
+    var corpo =
+      '<div class="conta-topo">' +
+        "<b>" + PL.esc(q.name) + "</b>" +
+        "<span>conta aberta desde " + PL.esc(PL.hora(new Date(c.desde).toISOString())) + "</span>" +
+      "</div>" +
+      (pedidos.length
+        ? '<div class="conta-lista">' + pedidos.map(function (p) {
+            return '<div class="conta-pedido">' +
+                '<div class="conta-cab">' +
+                  "<b>Pedido #" + PL.esc(p.daily_number) + "</b>" +
+                  "<span>" + PL.esc(PL.hora(p.created_at)) + " · " +
+                    PL.esc(curtoStatus(p.status)) + "</span>" +
+                "</div>" +
+                (p.itens || []).map(function (i) {
+                  return '<div class="conta-item">' +
+                      "<span>" + PL.esc(i.qty) + "× " + PL.esc(i.product_name) + "</span>" +
+                      "<span>" + PL.dinheiro(totalDoItem(i)) + "</span>" +
+                    "</div>";
+                }).join("") +
+                '<div class="conta-sub"><span>subtotal</span><span>' +
+                  PL.dinheiro(p.total_cents) + "</span></div>" +
+              "</div>";
+          }).join("") + "</div>" +
+          '<div class="conta-total"><span>Total</span><span>' + PL.dinheiro(c.total) + "</span></div>" +
+          (c.cancelados
+            ? '<p class="hint" style="margin:8px 0 0">' + c.cancelados +
+              (c.cancelados === 1 ? " pedido cancelado não entrou" : " pedidos cancelados não entraram") +
+              " na conta.</p>"
+            : "")
+        : '<div class="vazio"><b>Conta zerada.</b>Nada foi pedido neste quiosque desde a última vez que a conta fechou.</div>') +
+      (c.abertos
+        ? '<div class="aviso aviso-warn" style="font-weight:400;font-size:.88rem;margin-top:12px"><div>' +
+          "<b>" + c.abertos + (c.abertos === 1 ? " pedido ainda não foi lançado." : " pedidos ainda não foram lançados.") +
+          "</b> Resolva antes de fechar, senão alguém pode estar esperando." +
+          "</div></div>"
+        : "");
+
+    var botoes = [{ texto: "Voltar", classe: "btn-neutral" }];
+    if (pedidos.length) {
+      botoes.push({ texto: "🖨️ Imprimir", classe: "btn-outline",
+        acao: function () { imprimirConta(c); } });
+      botoes.push({ texto: "Fechar a conta", classe: "btn-accent",
+        acao: function (fechar) { fecharConta(c, fechar); } });
+    }
+
+    PL.modal({ titulo: "🧾 Conta · " + q.name, larga: true, corpo: corpo, botoes: botoes });
+  }
+
+  async function fecharConta(c, fechar) {
+    var certeza = await PL.confirmar({
+      titulo: "Fechar a conta do " + c.q.name + "?",
+      texto: "Total de <b>" + PL.dinheiro(c.total) + "</b> em " + c.pedidos.length +
+        (c.pedidos.length === 1 ? " pedido." : " pedidos.") +
+        "<br><br>A conta <b>zera</b>: quem chegar depois começa do zero. Os pedidos " +
+        "continuam no histórico e no relatório do dia — nada é apagado." +
+        (c.abertos ? "<br><br>⚠ Há <b>" + c.abertos + " pedido ainda não lançado</b>." : ""),
+      ok: "Fechar a conta", perigo: !!c.abertos,
+    });
+    if (!certeza) return;
+
+    try {
+      await PL.backend.fecharSessoes([c.q.id]);
+      await PL.recarregarCatalogo();
+      await PL.recarregarPedidos();
+      fechar();
+      PL.aviso("Conta do " + c.q.name + " fechada. " + PL.dinheiro(c.total), "ok");
+    } catch (e) {
+      console.error("Fechar conta:", e);
+      PL.aviso(PL.erroLegivel(e), "erro");
+    }
+  }
+
+  // Folha para entregar na mão do pescador. Montada dentro da própria
+  // página (tablet costuma bloquear pop-up) e só aparece na impressão.
+  function imprimirConta(c) {
+    var antiga = document.getElementById("folhaConta");
+    if (antiga) antiga.remove();
+
+    var casa = (PL.ctx && PL.ctx.cliente) || {};
+    var folha = document.createElement("div");
+    folha.id = "folhaConta";
+    folha.className = "folha-conta";
+    folha.innerHTML =
+      '<div class="folha-conta-topo">' +
+        "<b>" + PL.esc(casa.name || "Pedidos") + "</b>" +
+        "<span>" + PL.esc(c.q.name) + " · " +
+          PL.esc(new Date().toLocaleString("pt-BR")) + "</span>" +
+      "</div>" +
+      linhasDaConta(c).map(function (p) {
+        return '<div class="folha-conta-pedido">' +
+            "<b>Pedido #" + PL.esc(p.daily_number) + " · " + PL.esc(PL.hora(p.created_at)) + "</b>" +
+            (p.itens || []).map(function (i) {
+              return '<div class="folha-conta-item"><span>' + PL.esc(i.qty) + "× " +
+                PL.esc(i.product_name) + "</span><span>" + PL.dinheiro(totalDoItem(i)) + "</span></div>";
+            }).join("") +
+          "</div>";
+      }).join("") +
+      '<div class="folha-conta-total"><span>TOTAL</span><span>' + PL.dinheiro(c.total) + "</span></div>";
+
+    document.body.appendChild(folha);
+    document.body.classList.add("imprimindo-conta");
+
+    function limpar() {
+      document.body.classList.remove("imprimindo-conta");
+      var f = document.getElementById("folhaConta");
+      if (f) f.remove();
+      window.removeEventListener("afterprint", limpar);
+    }
+    window.addEventListener("afterprint", limpar);
+    setTimeout(limpar, 60000);
+    setTimeout(function () { window.print(); }, 120);
+  }
 
   // ==================================================================
   //  REGISTRO DAS TELAS
@@ -984,6 +1361,22 @@
         return;
       }
       PL.aviso("As configurações ainda não carregaram.", "avisa");
+    },
+  });
+
+  PL.registrarTela({
+    id: "quiosques",
+    rotulo: "Quiosques",
+    icone: "🏖️",
+    ordem: 10,
+    papeis: ["recepcao", "admin"],
+
+    montar: montarQuiosques,
+    aoEntrar: function () { quiosquesViva = true; },
+    aoSair: function () {
+      quiosquesViva = false;
+      if (caixaQuiosques) caixaQuiosques.removeEventListener("click", cliqueNosQuiosques);
+      caixaQuiosques = null;
     },
   });
 
