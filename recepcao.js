@@ -1,11 +1,14 @@
 /* ============================================================
    PEDIDOS LAGOA — RECEPÇÃO
    ============================================================
-   As DUAS telas de quem fica no balcão:
+   As TRÊS telas de quem fica no balcão:
 
      "Pedidos"   → o quadro ao vivo. É o coração do sistema: o que
                    o quiosque pediu aparece aqui na hora, com som,
                    e a recepção resolve com um toque.
+     "Quiosques" → a conta aberta de cada um: o que foi consumido,
+                   com impressão para entregar na mão e o botão que
+                   zera quando o pescador vai embora.
      "Histórico" → a tabela do dia, com resumo e exportação para o
                    Excel (fechamento de caixa).
 
@@ -17,8 +20,8 @@
    pedido é um sistema que, no movimento, ninguém usa — e aí a
    recepção volta a anotar em papel.
 
-   Os dois botões de exceção continuam: "pediu errado" (quando já
-   houve gasto) e "cancelar" (quando não houve).
+   O botão de exceção é um só: "cancelar", e ele EXIGE um motivo — que
+   o quiosque enxerga e que entra no relatório.
 
    Nada aqui conversa com o banco direto: tudo passa por PL.backend.
    Assim o modo demonstração e o modo nuvem se comportam igual.
@@ -113,6 +116,23 @@
   }
 
   function ehAberto(p) { return PL.ABERTOS.indexOf(p.status) >= 0; }
+
+  function quiosqueDoPedido(p) {
+    var lista = (PL.catalogo && PL.catalogo.quiosques) || [];
+    for (var i = 0; i < lista.length; i++) {
+      if (lista[i].id === p.kiosk_id) return lista[i];
+    }
+    return null;
+  }
+
+  // O pedido pertence à conta que está aberta agora naquele quiosque?
+  // Fechar a conta faz os pedidos dela saírem do quadro; eles continuam
+  // inteiros no Histórico.
+  function daSessaoAberta(p) {
+    var q = quiosqueDoPedido(p);
+    if (!q) return true;   // quiosque desconhecido: melhor mostrar que sumir
+    return new Date(p.created_at).getTime() >= PL.inicioDaSessao(q);
+  }
 
   function minutosEntre(inicio, fim) {
     if (!inicio || !fim) return null;
@@ -220,8 +240,14 @@
       ? botao("btn-neutral btn-sm", "👁 Ver itens", 'data-detalhe="1"')
       : "";
 
+    // Pedido que ficou para trás de uma conta já fechada. Ele continua na
+    // tela de propósito (pode ter gente esperando), mas precisa avisar que
+    // é de outro turno — senão a recepção cobra do pescador errado.
+    var doTurnoPassado = aberto && !daSessaoAberta(p);
+
     var classes = "pedido" +
       (ehNovo(p) ? " novo" : "") +
+      (doTurnoPassado ? " turno-passado" : "") +
       (aberto && grau === "atrasado" ? " atrasado" : "");
 
     return '<article class="' + classes + '" data-status="' + PL.esc(p.status) + '"' +
@@ -231,7 +257,9 @@
           '<div class="pedido-quiosque">' +
             "<b>" + PL.esc(nomeDoQuiosque(p)) + "</b>" +
             '<span class="pedido-num">Pedido #' + PL.esc(p.daily_number) +
-              " · " + PL.esc(PL.hora(p.created_at)) + "</span>" +
+              " · " + PL.esc(PL.hora(p.created_at)) +
+              (doTurnoPassado ? ' <span class="selo-turno">turno anterior</span>' : "") +
+            "</span>" +
           "</div>" +
           canto +
         "</div>" +
@@ -294,7 +322,6 @@
               opcoesDeQuiosque(filtros.quiosque) + "</select>" +
             switchSom +
             '<button type="button" class="btn btn-sm btn-outline" id="pdImprimir">🖨️ Imprimir</button>' +
-            '<button type="button" class="btn btn-sm btn-accent" id="pdEncerrar" hidden>🔄 Encerrar contas</button>' +
           "</div>" +
         "</div>" +
         '<p class="hint" id="pdResumo"></p>' +
@@ -324,10 +351,8 @@
       });
     }
     PL.$("#pdImprimir", caixa).addEventListener("click", function () { window.print(); });
-    PL.$("#pdEncerrar", caixa).addEventListener("click", abrirEncerrarContas);
 
     desenharPedidos();
-    atualizarBotaoEncerrar();
   }
 
   // ==================================================================
@@ -336,20 +361,14 @@
   //  Tem dia com pesca de dia e pesca de noite: o mesmo quiosque troca de
   //  gente. A conta de quem foi embora não pode aparecer para quem chega.
   //
-  //  O botão aparece a partir da hora configurada (18h por padrão). Por
-  //  padrão ele encerra TODAS as contas — e a recepção marca as exceções,
+  //  Este é o atalho do FIM DO DIA, na aba Quiosques: por padrão ele
+  //  encerra TODAS as contas — e a recepção marca as exceções,
   //  os quiosques que vão virar a noite. É de propósito nessa ordem: quem
   //  esquece de marcar termina com o quadro limpo, que é o erro barato.
   //  O contrário deixaria a conta do almoço na mão de quem chegou à noite.
   //
   //  E se ninguém tocar em nada, tudo zera sozinho na hora da virada.
   // ==================================================================
-  function atualizarBotaoEncerrar() {
-    var b = PL.$("#pdEncerrar", caixaPedidos || document);
-    if (!b) return;
-    b.hidden = !PL.horaDeEncerrar();
-  }
-
   function abrirEncerrarContas() {
     var quiosques = ((PL.catalogo && PL.catalogo.quiosques) || [])
       .filter(function (q) { return q.active !== false; })
@@ -482,12 +501,21 @@
 
     var todos = PL.pedidos || [];
     var doQuiosque = todos.filter(passaNoFiltro);
+
+    // Pedido ainda a lançar aparece SEMPRE, mesmo se a conta do quiosque
+    // já foi fechada: pode ter gente esperando comida, e sumir com isso
+    // seria o pior silêncio possível. Ele ganha um selo de turno anterior.
     var abertos = doQuiosque.filter(ehAberto)
       .slice()
       // o mais antigo em cima: quem espera há mais tempo é o próximo
       .sort(function (a, b) { return new Date(a.created_at) - new Date(b.created_at); });
 
-    var fechados = doQuiosque.filter(function (p) { return !ehAberto(p); })
+    // Já resolvido só continua na tela enquanto a conta daquele quiosque
+    // estiver aberta. Fechou a conta, aqueles pedidos saem do quadro — a
+    // recepção passa a olhar só o que está em jogo agora. Nada é apagado:
+    // eles seguem inteiros no Histórico e no relatório do dia.
+    var fechados = doQuiosque
+      .filter(function (p) { return !ehAberto(p) && daSessaoAberta(p); })
       .slice()
       .sort(function (a, b) {
         return new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at);
@@ -1084,8 +1112,6 @@
   PL.ao("tique", function () {
     if (!telaViva) return;
     atualizarRelogios();
-    // o botão de encerrar contas nasce sozinho quando dá a hora
-    atualizarBotaoEncerrar();
   });
 
   // Quiosque novo, ou quiosque renomeado, muda o texto dos cartões.
@@ -1138,7 +1164,7 @@
             '<button type="button" class="btn btn-sm btn-accent" id="qkEncerrar">🔄 Fechar várias</button>' +
           "</div>" +
         "</div>" +
-        '<p class="hint">Toque num quiosque para ver a conta dele e fechar quando o pescador for embora.</p>' +
+        '<p class="hint" id="qkRecado">Toque num quiosque para ver a conta dele e fechar quando o pescador for embora.</p>' +
       "</section>" +
       '<div id="qkGrade"></div>';
 
@@ -1171,6 +1197,26 @@
     if (!lista.length) {
       grade.innerHTML = '<div class="vazio"><b>Nenhum quiosque ativo.</b>Cadastre os quiosques na engrenagem.</div>';
       return;
+    }
+
+    // Depois da hora da virada (18h por padrão) o recado muda para lembrar
+    // do fechamento do dia. O botão "Fechar várias" fica sempre à mão —
+    // esta tela é o lugar dele —, mas até lá ele não chama atenção.
+    var recado = PL.$("#qkRecado", caixaQuiosques);
+    var bt = PL.$("#qkEncerrar", caixaQuiosques);
+    if (recado && bt) {
+      if (PL.horaDeEncerrar()) {
+        var comConta = lista.filter(function (l) { return l.pedidos.length; }).length;
+        recado.innerHTML = "🌙 <b>Fim do dia.</b> " +
+          (comConta
+            ? comConta + (comConta === 1 ? " quiosque tem conta aberta." : " quiosques têm conta aberta.") +
+              " Use <b>Fechar várias</b> e marque só os que vão virar a noite."
+            : "Nenhuma conta aberta — não há nada para fechar.");
+        bt.classList.toggle("pisca-devagar", comConta > 0);
+      } else {
+        recado.textContent = "Toque num quiosque para ver a conta dele e fechar quando o pescador for embora.";
+        bt.classList.remove("pisca-devagar");
+      }
     }
 
     grade.innerHTML = '<div class="quiosques-grade">' + lista.map(function (c) {

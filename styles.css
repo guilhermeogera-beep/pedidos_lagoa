@@ -459,6 +459,20 @@ img{max-width:100%}
 }
 .status-recebido {background:var(--warn-soft);color:var(--st-recebido)}
 .status-lancado  {background:var(--ok-soft);color:var(--st-lancado)}
+
+/* pedido que sobrou de uma conta ja fechada: continua na tela (pode ter
+   gente esperando), mas avisa que e de outro turno — senao a recepcao
+   cobraria do pescador errado */
+.selo-turno{
+  display:inline-block;background:#5B4A8A;color:#fff;border-radius:999px;
+  padding:1px 8px;font-size:.66rem;font-weight:800;text-transform:uppercase;
+  letter-spacing:.04em;margin-left:6px;vertical-align:middle;
+}
+.pedido.turno-passado{border-left-color:#5B4A8A}
+
+/* chamada discreta no fim do dia: pisca devagar, sem virar alarme */
+@keyframes pisca-devagar{0%,100%{box-shadow:0 0 0 0 rgba(244,160,36,0)}50%{box-shadow:0 0 0 5px rgba(244,160,36,.35)}}
+.pisca-devagar{animation:pisca-devagar 2.4s ease-in-out infinite}
 .status-erro,
 .status-cancelado{background:var(--danger-soft);color:var(--st-erro)}
 
