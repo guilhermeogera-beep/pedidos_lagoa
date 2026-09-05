@@ -659,6 +659,25 @@ table.tabela td.num,table.tabela th.num{text-align:right;font-variant-numeric:ta
 .pedido.levando .recado-fase{animation:respira 2.2s ease-in-out infinite}
 
 /* ============================================================
+   ESCOLHER A FOTO DO PRODUTO
+   ------------------------------------------------------------
+   A prévia fica do lado do botão, no mesmo formato do cartão do
+   cardápio (16/10): o admin vê na hora como a foto vai cortar,
+   em vez de descobrir depois de salvar.
+   ============================================================ */
+.foto-escolha{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.foto-previa{
+  width:150px;flex:0 0 auto;aspect-ratio:16/10;border-radius:12px;
+  border:1.5px dashed var(--line);background:var(--brand-soft);
+  overflow:hidden;display:flex;align-items:center;justify-content:center;
+}
+.foto-previa img{width:100%;height:100%;object-fit:cover;display:block}
+.foto-vazia{color:var(--muted);font-size:.8rem;font-weight:600}
+.foto-botoes{flex:1 1 190px;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.foto-botoes .btn{width:100%}
+@media (min-width:460px){.foto-botoes .btn{width:auto}}
+
+/* ============================================================
    CONTAS DOS QUIOSQUES
    ------------------------------------------------------------
    Um cartão por quiosque, com o total à vista. A recepção olha

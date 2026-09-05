@@ -351,6 +351,12 @@
     if (/Invalid login credentials/i.test(t)) return "Usuário ou senha não confere.";
     if (/Failed to fetch|NetworkError|network/i.test(t)) return "Sem internet. Confira a conexão do tablet.";
     if (/JWT|token|expired/i.test(t)) return "A sessão expirou. Entre de novo.";
+    // O caso do armazenamento vem ANTES do "sem permissão" genérico: as duas
+    // mensagens falam em row-level security, e a genérica ganharia — deixando
+    // quem lê sem saber que o problema é o 09 que faltou rodar.
+    if (/row-level security/i.test(t) && /storage|object|bucket/i.test(t)) {
+      return "Sem permissão para enviar a foto. Rode o 09-fotos-do-cardapio.sql no Supabase.";
+    }
     if (/permission denied|42501|row-level security/i.test(t)) return "Este perfil não tem permissão para isso.";
     if (/duplicate key|already exists/i.test(t)) return "Já existe um registro com esse nome.";
     // Função ou coluna que o app usa mas que o banco ainda não tem: quase
@@ -361,6 +367,13 @@
     }
     if (/column .* does not exist|42703/i.test(t)) {
       return "O banco está numa versão anterior à do aplicativo. Rode os arquivos SQL que faltam.";
+    }
+    // Armazenamento das fotos ainda não existe ou está fechado
+    if (/bucket not found/i.test(t)) {
+      return "O armazenamento de fotos ainda não foi criado. Rode o 09-fotos-do-cardapio.sql no Supabase.";
+    }
+    if (/payload too large|exceeded the maximum allowed size/i.test(t)) {
+      return "A imagem ficou grande demais. Tente uma foto menor.";
     }
     return t || "Não deu certo.";
   }
@@ -551,6 +564,33 @@
         return ok(sb.rpc("fechar_sessao_quiosques", { p_ids: ids }));
       },
 
+      // Manda a foto para o armazenamento e devolve o endereço público.
+      // O nome do arquivo é sorteado e leva o id do cliente na frente:
+      // dois estabelecimentos no mesmo banco nunca escrevem um por cima
+      // do outro, e trocar a foto de um produto não mexe na de outro.
+      async subirFoto(arquivo) {
+        const { blob } = await encolherFoto(arquivo);
+        const nome = ctx.cliente.id + "/" +
+          Date.now().toString(36) + Math.random().toString(36).slice(2, 8) + ".jpg";
+
+        const { error } = await sb.storage.from("cardapio")
+          .upload(nome, blob, { contentType: "image/jpeg", upsert: false });
+        if (error) throw error;
+
+        const { data } = sb.storage.from("cardapio").getPublicUrl(nome);
+        return data.publicUrl;
+      },
+
+      // Apaga uma foto que este app subiu. Endereço de fora (alguém colou
+      // um link) passa batido de propósito — não é nosso para apagar.
+      async apagarFoto(url) {
+        const caminho = caminhoDaFoto(url);
+        if (!caminho) return false;
+        const { error } = await sb.storage.from("cardapio").remove([caminho]);
+        if (error) { console.warn("Apagar foto:", error); return false; }
+        return true;
+      },
+
       async disponibilidade(produtoId, disponivel) {
         return ok(sb.rpc("set_product_availability", { p_id: produtoId, p_available: disponivel }));
       },
@@ -729,6 +769,8 @@
 
       async marcarVistos() { return 0; },
       async fecharSessoes() { throw new Error("Sem permissão."); },
+      async subirFoto() { throw new Error("Sem permissão."); },
+      async apagarFoto() { return false; },
       async disponibilidade() { throw new Error("Sem permissão."); },
       async salvar() { throw new Error("Sem permissão."); },
       async remover() { throw new Error("Sem permissão."); },
@@ -741,6 +783,76 @@
       // o cliente só precisa ver o próprio pedido mudar de estado.
       escutar() { return null; },
     };
+  }
+
+  // ==================================================================
+  //  FOTO DO CARDÁPIO
+  //  ------------------------------------------------------------------
+  //  A foto sai do celular com vários MB e 4000 pixels de largura. Mandar
+  //  isso para o cardápio seria ruim duas vezes: o upload demora no
+  //  Wi-Fi da beira da lagoa, e depois CADA tablet baixa o arquivo inteiro
+  //  para mostrar uma miniatura de 200 pixels.
+  //
+  //  Então o próprio aparelho encolhe antes de enviar. Medido aqui: uma
+  //  imagem de 4032×3024 sai com 1200×900 e algumas centenas de KB (o pior
+  //  caso, com ruído puro, deu 256 KB; foto de verdade fica bem abaixo).
+  //  Leva cerca de 1,5 s num aparelho comum — daí o aviso na tela enquanto
+  //  isso acontece.
+  // ==================================================================
+  const FOTO_LADO_MAX = 1200;   // px no maior lado
+  const FOTO_QUALIDADE = 0.82;  // JPEG: acima disso o arquivo cresce sem ganho visível
+
+  // O endereço público do Supabase termina em ".../cardapio/<caminho>".
+  // Devolve só o <caminho> — e null se a foto não for nossa.
+  function caminhoDaFoto(url) {
+    const m = String(url || "").match(/\/storage\/v1\/object\/public\/cardapio\/(.+)$/);
+    return m ? decodeURIComponent(m[1].split("?")[0]) : null;
+  }
+
+  function encolherFoto(arquivo, ladoMax) {
+    const limite = ladoMax || FOTO_LADO_MAX;
+    return new Promise((resolve, reject) => {
+      if (!arquivo || !/^image\//.test(arquivo.type || "")) {
+        return reject(new Error("Escolha um arquivo de imagem (JPG, PNG ou WEBP)."));
+      }
+
+      const url = URL.createObjectURL(arquivo);
+      const img = new Image();
+
+      img.onload = () => {
+        try {
+          let { width: l, height: a } = img;
+          if (Math.max(l, a) > limite) {
+            const fator = limite / Math.max(l, a);
+            l = Math.round(l * fator);
+            a = Math.round(a * fator);
+          }
+          const tela = document.createElement("canvas");
+          tela.width = l; tela.height = a;
+          const g = tela.getContext("2d");
+          // fundo branco: PNG com transparência viraria preto no JPEG
+          g.fillStyle = "#ffffff";
+          g.fillRect(0, 0, l, a);
+          g.drawImage(img, 0, 0, l, a);
+
+          tela.toBlob((blob) => {
+            URL.revokeObjectURL(url);
+            if (!blob) return reject(new Error("Não consegui preparar a imagem."));
+            resolve({ blob, largura: l, altura: a });
+          }, "image/jpeg", FOTO_QUALIDADE);
+        } catch (e) {
+          URL.revokeObjectURL(url);
+          reject(e);
+        }
+      };
+
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Não consegui abrir essa imagem. Tente outra foto."));
+      };
+
+      img.src = url;
+    });
   }
 
   // Pergunta a localização ao celular. Devolve sempre — se a pessoa negar
@@ -1011,6 +1123,21 @@
         gravar(b);
         return (ids || []).length;
       },
+
+      // Sem nuvem, a foto vira um endereco "data:" guardado aqui mesmo.
+      // Encolhemos mais que no modo nuvem porque o armazenamento do
+      // navegador e pequeno (uns 5 MB no total).
+      async subirFoto(arquivo) {
+        const { blob } = await encolherFoto(arquivo, 700);
+        return await new Promise((resolve, reject) => {
+          const leitor = new FileReader();
+          leitor.onload = () => resolve(leitor.result);
+          leitor.onerror = () => reject(new Error("Nao consegui ler a imagem."));
+          leitor.readAsDataURL(blob);
+        });
+      },
+
+      async apagarFoto() { return false; },
 
       async disponibilidade(produtoId, disponivel) {
         const b = ler();

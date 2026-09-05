@@ -491,11 +491,34 @@ window.PLAdmin = window.PLAdmin || {};
           </select>
           <span class="field-hint">A categoria vira o grupo do cardápio (Porções, Bebidas…).</span>
         </label>
-        <label class="field">
-          <span>Endereço da foto (opcional)</span>
-          <input type="url" id="pFoto" value="${esc(p.image_url || "")}" placeholder="https://…/tilapia.jpg" />
-          <span class="field-hint">Cole o endereço de uma imagem que já esteja na internet.</span>
-        </label>
+        <div class="field">
+          <span>Foto (opcional)</span>
+          <div class="foto-escolha">
+            <div class="foto-previa" id="pPrevia">
+              ${p.image_url
+                ? `<img src="${esc(p.image_url)}" alt="" />`
+                : '<span class="foto-vazia">sem foto</span>'}
+            </div>
+            <div class="foto-botoes">
+              <input type="file" id="pArquivo" accept="image/*" hidden />
+              <button type="button" class="btn btn-outline" id="pEscolher" style="min-height:44px">
+                📷 ${p.image_url ? "Trocar foto" : "Escolher foto"}
+              </button>
+              <button type="button" class="btn btn-danger btn-sm" id="pTirar"
+                      style="min-height:44px" ${p.image_url ? "" : "hidden"}>Tirar foto</button>
+              <span class="field-hint" id="pFotoMsg">
+                A foto é reduzida no próprio aparelho antes de subir — fica leve
+                para o tablet do quiosque carregar.
+              </span>
+            </div>
+          </div>
+          <details style="margin-top:8px">
+            <summary class="hint" style="cursor:pointer">Ou colar o endereço de uma imagem</summary>
+            <input type="url" id="pFoto" value="${esc(p.image_url || "")}"
+                   placeholder="https://…/tilapia.jpg" style="margin-top:8px" />
+            <span class="field-hint">Para imagem que já está em outro lugar da internet.</span>
+          </details>
+        </div>
 
         <div class="field-row">
           <label class="field">
@@ -523,7 +546,70 @@ window.PLAdmin = window.PLAdmin || {};
           <span class="trilho"></span>
           <span>Tem hoje (dá para pedir)</span>
         </label>`,
-      aoSalvar: async function (corpo) {
+
+      aoAbrir: function (corpo, api) {
+        var arquivo  = PL.$("#pArquivo", corpo);
+        var escolher = PL.$("#pEscolher", corpo);
+        var tirar    = PL.$("#pTirar", corpo);
+        var previa   = PL.$("#pPrevia", corpo);
+        var campoUrl = PL.$("#pFoto", corpo);
+        var msg      = PL.$("#pFotoMsg", corpo);
+        // a foto que este formulário substituiu, para apagar do
+        // armazenamento só DEPOIS que a gravação der certo
+        var trocada = null;
+
+        function mostrar(url) {
+          previa.innerHTML = url
+            ? '<img src="' + esc(url) + '" alt="" />'
+            : '<span class="foto-vazia">sem foto</span>';
+          escolher.textContent = url ? "📷 Trocar foto" : "📷 Escolher foto";
+          tirar.hidden = !url;
+        }
+
+        escolher.onclick = function () { arquivo.click(); };
+
+        arquivo.onchange = async function () {
+          var f = arquivo.files && arquivo.files[0];
+          if (!f) return;
+
+          escolher.disabled = true;
+          escolher.textContent = "Enviando…";
+          msg.textContent = "Preparando a imagem…";
+
+          try {
+            var anterior = campoUrl.value;
+            var url = await PL.backend.subirFoto(f);
+            campoUrl.value = url;
+            if (anterior && anterior !== url) trocada = anterior;
+            mostrar(url);
+            msg.textContent = "Foto pronta. Ela entra no cardápio quando você salvar.";
+          } catch (e) {
+            console.error("Subir foto:", e);
+            msg.textContent = PL.erroLegivel(e);
+          } finally {
+            escolher.disabled = false;
+            if (!campoUrl.value) escolher.textContent = "📷 Escolher foto";
+            arquivo.value = "";   // deixa escolher o MESMO arquivo de novo
+          }
+        };
+
+        tirar.onclick = function () {
+          if (campoUrl.value) trocada = campoUrl.value;
+          campoUrl.value = "";
+          mostrar("");
+          msg.textContent = "A foto sai do cardápio quando você salvar.";
+        };
+
+        // quem cola um endereço à mão também vê a prévia
+        campoUrl.oninput = function () { mostrar(campoUrl.value.trim()); };
+
+        // Guardado no formulário para o aoSalvar alcançar: a foto antiga só
+        // é apagada depois que a gravação deu certo. Apagar antes deixaria
+        // o produto sem imagem se o salvamento falhasse.
+        api.fotoTrocada = function () { return trocada; };
+      },
+
+      aoSalvar: async function (corpo, api) {
         var nome = val(corpo, "pNome");
         if (!nome) { PL.aviso("Escreva o nome do produto.", "avisa"); return false; }
 
@@ -552,6 +638,21 @@ window.PLAdmin = window.PLAdmin || {};
 
         await PL.backend.salvar("produtos", linha);
         await PL.recarregarCatalogo();
+
+        // A foto antiga só sai do armazenamento AGORA, com a gravação já
+        // feita. E só se ninguém mais estiver usando ela — dois produtos
+        // podem apontar para a mesma imagem se alguém copiou o endereço.
+        var velha = api && api.fotoTrocada && api.fotoTrocada();
+        if (velha) {
+          var aindaEmUso = (PL.catalogo.produtos || []).some(function (x) {
+            return x.image_url === velha;
+          });
+          if (!aindaEmUso) {
+            try { await PL.backend.apagarFoto(velha); }
+            catch (e) { console.warn("Foto antiga ficou no armazenamento:", e); }
+          }
+        }
+
         if (aoTerminar) aoTerminar();
       },
     });
