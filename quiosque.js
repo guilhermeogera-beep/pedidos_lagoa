@@ -74,6 +74,10 @@
   // null (e não "") de propósito: uma lista vazia também tem assinatura "",
   // e com "" aqui a tela de "nenhum pedido hoje" nunca seria desenhada.
   var assinaturaPedidos = null;  // para não redesenhar à toa a cada recarga
+  var assinaturaRelogio = null;  // o mesmo, para a virada do cardápio noturno
+  // Qual seção está desenhada AGORA. Diferente de abaAtual: o normal é a
+  // pessoa nunca tocar numa aba, e aí abaAtual fica vazio a manhã inteira.
+  var secaoMostrada = null;
 
   // ==================================================================
   //  ATALHOS DE LEITURA DO CATÁLOGO
@@ -87,9 +91,18 @@
 
   // Nunca ordenamos a lista original: ela é a mesma que o núcleo guarda em
   // memória, e mexer nela bagunçaria as outras telas.
+  //
+  // O admin enxerga também as abas fora do horário (marcadas com o
+  // relógio), pelo mesmo motivo que ele enxerga produto desligado: é assim
+  // que ele confere às 10h da manhã se o cardápio noturno está certo, sem
+  // ter que voltar à lagoa de madrugada.
   function secoesVisiveis() {
+    var admin = PL.ehAdmin();
     return (PL.catalogo.secoes || [])
-      .filter(function (s) { return s.active !== false; })
+      .filter(function (s) {
+        if (s.active === false) return false;
+        return admin || secaoNoAr(s);
+      })
       .sort(function (a, b) { return (a.sort_order || 0) - (b.sort_order || 0); });
   }
 
@@ -97,7 +110,25 @@
     var lista = secoesVisiveis();
     if (!lista.length) return null;
     var achada = lista.filter(function (s) { return s.id === abaAtual; })[0];
-    return achada || lista[0];
+    if (achada) return achada;
+
+    // A aba que estava na tela saiu do ar. Se foi outra que tomou o lugar
+    // dela, é NESSA que a pessoa deve cair: às 18h em ponto quem está no
+    // quiosque olhando o cardápio de comida quer ver o da noite, não a aba
+    // de iscas que por acaso vem antes na fila.
+    //
+    // Vale secaoMostrada e não só abaAtual porque o normal é ninguém ter
+    // tocado em aba nenhuma: o tablet abre na primeira e fica ali.
+    var saiu = abaAtual || secaoMostrada;
+    var substituta = lista.filter(function (r) {
+      return r.replaces_section_id === saiu && secaoNoAr(r);
+    })[0];
+    if (substituta) return substituta;
+
+    // Nada escolhido, ou a aba sumiu sem deixar substituta: cai na primeira
+    // que está valendo agora. Só se nenhuma estiver é que abre uma fora de
+    // hora — e isso só acontece com o admin, que é quem as enxerga.
+    return lista.filter(secaoNoAr)[0] || lista[0];
   }
 
   // O admin enxerga também o que está desligado (para conferir o cadastro);
@@ -193,6 +224,99 @@
     return de && ate ? de + " às " + ate : "";
   }
 
+  // ==================================================================
+  //  QUAL CARDÁPIO VALE AGORA  (a aba noturna)
+  //  ------------------------------------------------------------------
+  //  Uma aba pode ter AGENDA (dias da semana + faixa de horário) e pode
+  //  ESCONDER OUTRA enquanto está no ar. É assim que o cardápio noturno
+  //  de terça e sexta entra e leva o cardápio do dia embora junto.
+  //
+  //  As mesmas contas existem no banco (app.secao_na_agenda). Aqui elas
+  //  servem só para a tela não oferecer o que vai ser recusado; quem
+  //  decide de verdade continua sendo o place_order.
+  // ==================================================================
+  function diasDaSecao(s) {
+    var d = s && s.active_days;
+    if (!Array.isArray(d)) return [];
+    return d.map(Number).filter(function (n) { return n >= 0 && n <= 6; });
+  }
+
+  function secaoNaAgenda(s) {
+    var dias = diasDaSecao(s);
+    var de = emMinutos(s.active_from);
+    var ate = emMinutos(s.active_to);
+    var agora = horaDaCasa();
+
+    if (de !== null && ate !== null && de !== ate) {
+      var dentro = de < ate ? (agora >= de && agora < ate) : (agora >= de || agora < ate);
+      if (!dentro) return false;
+    }
+    if (!dias.length) return true;
+
+    var hoje = PL.diaDaCasa(PL.ctx.cliente && PL.ctx.cliente.timezone);
+    // Janela que passa da meia-noite, e estamos na madrugada dela: o dia
+    // que vale é o de ONTEM, quando a noite começou. Sem isto o cardápio
+    // de terça sumiria à meia-noite em ponto, com o quiosque ainda cheio.
+    if (de !== null && ate !== null && de > ate && agora < ate) hoje = (hoje + 6) % 7;
+    return dias.indexOf(hoje) >= 0;
+  }
+
+  // Qual aba está ocupando o lugar desta agora — ou null se nenhuma.
+  function quemEstaNoLugar(s) {
+    if (!s) return null;
+    return (PL.catalogo.secoes || []).filter(function (r) {
+      return r.active !== false && r.replaces_section_id === s.id && secaoNaAgenda(r);
+    })[0] || null;
+  }
+
+  // A aba aparece agora? Agenda dela E ninguém ocupando o lugar dela.
+  function secaoNoAr(s) {
+    if (!s || s.active === false) return false;
+    if (!secaoNaAgenda(s)) return false;
+    return !quemEstaNoLugar(s);
+  }
+
+  // Por que esta aba não está na tela do quiosque agora. São dois motivos
+  // bem diferentes, e dizer o errado confunde justamente quem foi conferir:
+  // ou a aba tem agenda e não é a hora dela, ou outra aba tomou o lugar.
+  function porQueAbaSaiu(s) {
+    var noLugar = quemEstaNoLugar(s);
+    if (noLugar) {
+      return "sai do ar enquanto o " + noLugar.label + " está valendo (" +
+             PL.agendaEmPalavras(noLugar) + ")";
+    }
+    return "aparece " + PL.agendaEmPalavras(s);
+  }
+
+  // Tudo que MUDA SOZINHO com a passagem do tempo, num texto só: quais abas
+  // estão no ar e quais produtos estão dentro da janela deles.
+  //
+  // Serve para redesenhar o cardápio na virada — às 18h o noturno assume, e
+  // ninguém vai estar ali para apertar F5 — sem redesenhar de 20 em 20
+  // segundos à toa: uma grade de 40 fotos piscando o dia inteiro num tablet
+  // que fica ligado 12 horas é desperdício de bateria e de vista.
+  function assinaturaDoRelogio() {
+    var abas = (PL.catalogo.secoes || [])
+      .map(function (s) { return s.id + (secaoNoAr(s) ? "1" : "0"); })
+      .join("|");
+    var itens = (PL.catalogo.produtos || [])
+      .filter(function (p) { return p.available_from && p.available_to; })
+      .map(function (p) { return p.id + (noHorario(p) ? "1" : "0"); })
+      .join("|");
+    return abas + "#" + itens;
+  }
+
+  // Por que este produto não pode ser pedido agora — ou "" se pode.
+  function porQueNaoPode(p) {
+    if (!p) return "Este item saiu do cardápio.";
+    if (p.active === false) return "Este item está oculto do cardápio e não pode ser pedido.";
+    if (p.available === false) return p.name + " está esgotado hoje.";
+    var secao = (PL.catalogo.secoes || []).filter(function (s) { return s.id === p.section_id; })[0];
+    if (secao && !secaoNoAr(secao)) return p.name + " é do " + secao.label + ", que não está valendo agora.";
+    if (!noHorario(p)) return p.name + " só pode ser pedido das " + janelaDoProduto(p) + ".";
+    return "";
+  }
+
   function quiosquesAtivos() {
     return (PL.catalogo.quiosques || [])
       .filter(function (q) { return q.active !== false; })
@@ -247,10 +371,10 @@
   function limparCarrinhoFantasma() {
     var antes = carrinho.length;
     carrinho = carrinho.filter(function (l) {
-      var p = produtoPorId(l.product_id);
       // fora de hora entra aqui também: o carrinho pode ter ficado aberto
-      // desde o almoço, e às 15h01 aquele prato deixa de ser aceito
-      return p && p.active !== false && p.available !== false && noHorario(p);
+      // desde o almoço, e às 15h01 aquele prato deixa de ser aceito — o
+      // mesmo vale para o cardápio do dia quando o noturno assume às 18h
+      return !porQueNaoPode(produtoPorId(l.product_id));
     });
     if (carrinho.length !== antes) {
       gravarCarrinho();
@@ -284,22 +408,15 @@
     var p = produtoPorId(id);
     if (!p) return;
 
-    // Esgotado é o "acabou hoje" que a recepção liga. O cartão fica na tela
-    // (para o quiosque saber que o item existe) mas não entra no pedido.
-    if (p.available === false) {
-      PL.aviso(p.name + " está esgotado hoje.", "avisa");
-      return;
-    }
-    // Item oculto só aparece para o admin conferir o cadastro. O banco recusa
-    // pedido de produto desligado, então nem deixamos chegar lá.
-    if (p.active === false) {
-      PL.aviso("Este item está oculto do cardápio e não pode ser pedido.", "avisa");
-      return;
-    }
-    // Fora do horário: o banco também recusa, mas explicar aqui é melhor do
-    // que deixar montar o pedido inteiro para ele voltar com erro no fim.
-    if (!noHorario(p)) {
-      PL.aviso(p.name + " só pode ser pedido das " + janelaDoProduto(p) + ".", "avisa");
+    // Esgotado ("acabou hoje"), oculto, fora do horário do produto ou de uma
+    // aba que não está valendo agora: o cartão continua na tela — para o
+    // quiosque saber que o item existe — mas não entra no pedido.
+    //
+    // O banco recusaria de todo jeito. Dizer o motivo aqui é melhor do que
+    // deixar montar o pedido inteiro para ele voltar com erro no fim.
+    var impedimento = porQueNaoPode(p);
+    if (impedimento) {
+      PL.aviso(impedimento, "avisa");
       return;
     }
 
@@ -376,8 +493,9 @@
     alvo.appendChild(areaAbas);
     alvo.appendChild(areaSecao);
 
-    // O catálogo pode ter mudado enquanto a tela estava fechada.
+    // O catálogo — e a hora — podem ter mudado enquanto a tela estava fechada.
     limparCarrinhoFantasma();
+    assinaturaRelogio = assinaturaDoRelogio();
 
     desenharTopo();
     desenharAbas();
@@ -424,6 +542,9 @@
         else localStorage.removeItem(CHAVE_QUIOSQUE);
       } catch (e) { /* não é grave: vale só nesta sessão */ }
       desenharBarraCarrinho();
+      // O mural muda junto: os avisos escritos para um quiosque só valem
+      // para o que está escolhido aqui.
+      desenharSecao();
     });
   }
 
@@ -438,10 +559,18 @@
 
     var atual = secaoAtual();
     areaAbas.innerHTML = lista.map(function (s) {
+      // Só o admin chega a ver uma aba fora do ar; o relógio avisa que
+      // aquilo ali é o cadastro, não o que o quiosque está vendo agora.
+      var fora = !secaoNoAr(s);
       return '<button type="button" class="aba' + (s.id === atual.id ? " is-active" : "") +
-        '" data-secao="' + PL.esc(s.id) + '">' +
+        (fora ? " aba-fora" : "") +
+        '" data-secao="' + PL.esc(s.id) + '"' +
+        (fora ? ' title="' + PL.esc(s.label + " " + porQueAbaSaiu(s)) +
+                '. Só você, como administrador, está vendo esta aba."' : "") + ">" +
         (s.icon ? '<span class="aba-icone">' + PL.esc(s.icon) + "</span>" : "") +
-        "<span>" + PL.esc(s.label) + "</span></button>";
+        "<span>" + PL.esc(s.label) + "</span>" +
+        (fora ? '<span class="aba-relogio">🕐</span>' : "") +
+        "</button>";
     }).join("");
 
     areaAbas.onclick = function (e) {
@@ -465,6 +594,9 @@
   function desenharSecao() {
     if (!areaSecao) return;
     var secao = secaoAtual();
+    // guardado ANTES de desenhar: é o que a próxima virada de horário vai
+    // consultar para saber de onde a pessoa veio
+    secaoMostrada = secao ? secao.id : null;
 
     if (!secao) {
       areaSecao.innerHTML =
@@ -496,6 +628,15 @@
     if (escolhida && !cats.some(function (c) { return c.id === escolhida; })) escolhida = "";
 
     var html = "";
+
+    // Aba fora do horário dela: uma faixa em cima explica de uma vez só, em
+    // vez de repetir a mesma etiqueta em cada um dos 30 cartões.
+    // Só o admin chega aqui — para o quiosque a aba nem aparece.
+    if (!secaoNoAr(secao)) {
+      html += '<div class="recado-fase fase-espera">🕐 <b>' + PL.esc(secao.label) +
+        "</b> " + PL.esc(porQueAbaSaiu(secao)) +
+        ". Você está vendo esta aba porque é administrador; no tablet do quiosque ela está escondida.</div>";
+    }
 
     // Com uma categoria só, os chips não ajudam ninguém — viram enfeite.
     if (cats.length > 1) {
@@ -548,12 +689,13 @@
     var esgotado = p.available === false;
     var oculto = p.active === false;
     var foraDeHora = !noHorario(p);
+    var foraDaAba = !secaoNoAr(secao);
     var qtd = qtdNoCarrinho(p.id);
 
-    // .esgotado deixa o cartão apagado; serve igualmente para o item oculto
-    // e para o que está fora de hora, porque nos três casos ele está na tela
-    // só como informação.
-    var classes = "produto" + (esgotado || oculto || foraDeHora ? " esgotado" : "");
+    // .esgotado deixa o cartão apagado; serve igualmente para o item oculto,
+    // para o que está fora de hora e para o de uma aba que não está valendo
+    // agora, porque nos quatro casos ele está na tela só como informação.
+    var classes = "produto" + (esgotado || oculto || foraDeHora || foraDaAba ? " esgotado" : "");
 
     var foto = p.image_url
       ? '<img class="produto-foto" src="' + PL.esc(p.image_url) + '" alt="" loading="lazy">'
@@ -611,13 +753,17 @@
 
   // ---- aba de dicas ----
   function desenharDicas(secao) {
-    var meuQuiosque = PL.ctx.perfil ? PL.ctx.perfil.kiosk_id : null;
+    // O quiosque DA TELA, e não o do perfil: o admin não tem quiosque
+    // próprio, ele escolhe um ali em cima. Lendo o perfil, ele nunca veria
+    // um aviso feito para um quiosque só — justamente o que ele quer
+    // conferir depois de escrever "a tomada do 7 está em manutenção".
+    var qAtual = quiosqueAtual();
+    var meuQuiosque = qAtual ? qAtual.id : null;
 
     var lista = (PL.catalogo.dicas || [])
       .filter(function (d) {
         if (d.section_id !== secao.id || d.active === false) return false;
-        // dica sem quiosque vale para todo mundo; com quiosque, só para ele.
-        // (o admin não tem kiosk_id, então enxerga só as gerais)
+        // dica sem quiosque vale para todo mundo; com quiosque, só para ele
         return !d.kiosk_id || d.kiosk_id === meuQuiosque;
       })
       .sort(function (a, b) {
@@ -1275,6 +1421,8 @@
   PL.ao("catalogo", function () {
     if (!telaCardapioAtiva) return;
     limparCarrinhoFantasma();
+    // a agenda das abas pode ter sido mexida agora mesmo pelo admin
+    assinaturaRelogio = assinaturaDoRelogio();
     desenharTopo();
     desenharAbas();
     desenharSecao();
@@ -1287,11 +1435,26 @@
   });
 
   PL.ao("tique", function () {
-    if (!telaPedidosAtiva) return;
-    // A fase pode virar sozinha com o tempo ("já estamos levando" →
-    // "finalizado"), sem nada mudar no banco. desenharMeusPedidos só
-    // redesenha se a assinatura mudou; senão apenas acerta os relógios.
-    desenharMeusPedidos();
+    if (telaPedidosAtiva) {
+      // A fase pode virar sozinha com o tempo ("já estamos levando" →
+      // "finalizado"), sem nada mudar no banco. desenharMeusPedidos só
+      // redesenha se a assinatura mudou; senão apenas acerta os relógios.
+      desenharMeusPedidos();
+    }
+
+    if (telaCardapioAtiva) {
+      // A virada do cardápio noturno (e o fim da janela de um produto)
+      // acontece pelo relógio, sem nada mudar no banco — ninguém vai
+      // estar no quiosque às 18h em ponto para recarregar a página.
+      var agora = assinaturaDoRelogio();
+      if (agora !== assinaturaRelogio) {
+        assinaturaRelogio = agora;
+        limparCarrinhoFantasma();
+        desenharAbas();
+        desenharSecao();
+        desenharBarraCarrinho();
+      }
+    }
   });
 
   // ==================================================================
@@ -1309,6 +1472,8 @@
       // cima da próxima tela.
       telaCardapioAtiva = false;
       areaSecao = areaAbas = areaTopo = null;
+      assinaturaRelogio = null;
+      secaoMostrada = null;
       var pe = PL.$("#rodapeFixo");
       // o onclick vai junto: ele é do carrinho, não da tela que vem a seguir
       if (pe) { pe.innerHTML = ""; pe.onclick = null; }

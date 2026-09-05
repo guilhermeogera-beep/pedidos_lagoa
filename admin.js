@@ -148,6 +148,166 @@ window.PLAdmin = window.PLAdmin || {};
   }
 
   // Atalhos para ler o que foi digitado num formulário do pop-up.
+  // ------------------------------------------------------------------
+  //  A AGENDA DA ABA  (é assim que nasce o cardápio noturno)
+  //  ------------------------------------------------------------------
+  //  O mesmo bloco aparece nos DOIS lugares em que se edita uma aba: no
+  //  formulário da lista (⚙ → Cardápio → Editar) e na aba "Esta aba" que
+  //  o ⚙ do tablet abre. Ter um só construtor aqui evita o pior tipo de
+  //  bug de configuração — o de dois formulários que gravam campos
+  //  diferentes e o dono do estabelecimento não entende por que "só
+  //  funciona quando eu edito por um lado".
+  // ------------------------------------------------------------------
+  function temAgenda(s) {
+    return !!((Array.isArray(s.active_days) && s.active_days.length) ||
+              (s.active_from && s.active_to));
+  }
+
+  function blocoAgendaSecao(s) {
+    var dias = (Array.isArray(s.active_days) ? s.active_days : []).map(Number);
+    var ligada = temAgenda(s);
+    var outras = porOrdem(PL.catalogo.secoes).filter(function (x) {
+      return x.id && x.id !== s.id;
+    });
+
+    return `
+      <label class="field">
+        <span>Quando esta aba aparece</span>
+        <select id="agModo">
+          <option value="sempre"${ligada ? "" : " selected"}>Sempre</option>
+          <option value="agenda"${ligada ? " selected" : ""}>Só em certos dias e horários</option>
+        </select>
+        <span class="field-hint">
+          É por aqui que se faz um <b>cardápio noturno</b>: crie a aba dele, marque os dias e a
+          faixa de horário, e diga logo abaixo qual aba ele substitui enquanto estiver no ar.
+        </span>
+      </label>
+
+      <div id="agCaixa"${ligada ? "" : " hidden"}>
+        <div class="field">
+          <span>Em quais dias</span>
+          <div class="dias-semana">
+            ${PL.DIAS_DA_SEMANA.map(function (nome, i) {
+              return `<label class="dia-chip">
+                        <input type="checkbox" id="agDia${i}"${dias.indexOf(i) >= 0 ? " checked" : ""} />
+                        <span>${esc(nome.slice(0, 3))}</span>
+                      </label>`;
+            }).join("")}
+          </div>
+          <span class="field-hint">Nenhum marcado = todos os dias da semana.</span>
+        </div>
+
+        <div class="field-row">
+          <label class="field">
+            <span>Das</span>
+            <input type="time" id="agDe" value="${esc(horaCurtaDoBanco(s.active_from))}" />
+          </label>
+          <label class="field">
+            <span>Até</span>
+            <input type="time" id="agAte" value="${esc(horaCurtaDoBanco(s.active_to))}" />
+          </label>
+        </div>
+        <span class="field-hint" style="display:block;margin:-6px 0 4px">
+          Os dois vazios = o dia inteiro. Pode virar a meia-noite (18:00 às 02:00) — nesse caso a
+          madrugada continua contando como a noite do dia marcado, para o cardápio não sumir
+          à meia-noite com o quiosque ainda cheio.
+        </span>
+
+        <label class="field">
+          <span>Enquanto ela estiver no ar, esconder</span>
+          <select id="agEsconde">
+            <option value="">Não esconder nenhuma</option>
+            ${outras.map(function (o) {
+              return `<option value="${esc(o.id)}"${s.replaces_section_id === o.id ? " selected" : ""}>${esc((o.icon ? o.icon + " " : "") + o.label)}</option>`;
+            }).join("")}
+          </select>
+          <span class="field-hint">
+            A aba escolhida some do tablet enquanto esta estiver valendo, e volta sozinha depois.
+          </span>
+        </label>
+
+        <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
+          <div id="agPreview"></div>
+        </div>
+      </div>`;
+  }
+
+  // Liga o mostra/esconde e a frase de conferência. Chamada nos dois
+  // formulários, logo depois de o HTML entrar na tela.
+  function ligarAgendaSecao(corpo, s) {
+    var modo = PL.$("#agModo", corpo);
+    var caixa = PL.$("#agCaixa", corpo);
+    if (!modo || !caixa) return;
+
+    function conferir() {
+      var previa = PL.$("#agPreview", corpo);
+      if (!previa) return;
+      var lida = lerAgendaSecao(corpo);
+
+      // Falta alguma coisa: dizer O QUE falta vale mais do que repetir a
+      // agenda antiga, que é justamente o que a pessoa está tentando mudar.
+      if (lida.problema) {
+        previa.innerHTML = "⚠️ " + esc(lida.problema);
+        return;
+      }
+
+      var escondida = lida.campos.replaces_section_id
+        ? (PL.catalogo.secoes.filter(function (x) { return x.id === lida.campos.replaces_section_id; })[0] || {}).label
+        : null;
+      previa.innerHTML =
+        "Do jeito que está: a aba aparece <b>" + esc(PL.agendaEmPalavras(lida.campos)) + "</b>." +
+        (escondida ? " Enquanto ela estiver no ar, <b>" + esc(escondida) + "</b> fica escondida." : "");
+    }
+
+    modo.onchange = function () {
+      caixa.hidden = modo.value !== "agenda";
+      conferir();
+    };
+    caixa.addEventListener("change", conferir);
+    conferir();
+  }
+
+  // Devolve sempre {campos, problema}. O "problema" é a frase pronta para
+  // mostrar — a mesma serve para o aviso ao salvar e para a linha de
+  // conferência que roda a cada toque. Duas fontes de verdade aqui dariam
+  // um formulário que reclama de uma coisa e explica outra.
+  function lerAgendaSecao(corpo) {
+    var vazio = { active_days: null, active_from: null, active_to: null, replaces_section_id: null };
+    var modo = PL.$("#agModo", corpo);
+    // formulário sem o bloco (não deveria acontecer): não mexe em nada
+    if (!modo) return { campos: {}, problema: "" };
+    if (modo.value !== "agenda") return { campos: vazio, problema: "" };
+
+    var dias = [];
+    for (var i = 0; i < 7; i++) if (marcado(corpo, "agDia" + i)) dias.push(i);
+
+    var de = val(corpo, "agDe");
+    var ate = val(corpo, "agAte");
+
+    // Só um dos dois horários é sempre engano de digitação. Aceitar o campo
+    // pela metade faria a aba aparecer sempre, e o dono juraria que marcou.
+    if ((de && !ate) || (!de && ate)) {
+      return { campos: vazio, problema: "Preencha as duas horas — ou deixe as duas vazias para o dia inteiro." };
+    }
+
+    // Sem dia e sem hora, "só em certos dias e horários" não quer dizer
+    // nada: a aba apareceria sempre e, pior, esconderia a outra para
+    // sempre junto.
+    if (!dias.length && !de) {
+      return { campos: vazio, problema: "Marque pelo menos um dia da semana ou uma faixa de horário." };
+    }
+
+    return {
+      campos: {
+        active_days: dias.length ? dias : null,
+        active_from: de || null,
+        active_to: ate || null,
+        replaces_section_id: val(corpo, "agEsconde") || null,
+      },
+      problema: "",
+    };
+  }
+
   function val(corpo, id) {
     var el = PL.$("#" + id, corpo);
     return el ? String(el.value || "").trim() : "";
@@ -972,6 +1132,7 @@ window.PLAdmin = window.PLAdmin || {};
         <span class="trilho"></span>
         <span>Aba ligada (aparece para o quiosque)</span>
       </label>
+      ${blocoAgendaSecao(s)}
       <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
         <div>
           Tipo desta aba: <b>${s.kind === "tips" ? "conteúdo (dicas)" : "com produtos e carrinho"}</b>.<br>
@@ -981,19 +1142,23 @@ window.PLAdmin = window.PLAdmin || {};
       </div>
       <button type="button" class="btn btn-primary" id="sSalvar" style="min-height:48px">Salvar esta aba</button>`;
 
+    ligarAgendaSecao(caixa, s);
+
     PL.$("#sSalvar", caixa).onclick = async function () {
       var botao = PL.$("#sSalvar", caixa);
       var rotulo = val(caixa, "sLabel");
       if (!rotulo) { PL.aviso("Escreva o nome da aba.", "avisa"); return; }
+      var agenda = lerAgendaSecao(caixa);
+      if (agenda.problema) { PL.aviso(agenda.problema, "avisa"); return; }
       botao.disabled = true;
       await tentar(async function () {
-        var linha = {
+        var linha = Object.assign({
           id: s.id,
           label: rotulo,
           icon: val(caixa, "sIcone"),
           active: marcado(caixa, "sAtiva"),
           sort_order: Number(val(caixa, "sOrdem")) || 0,
-        };
+        }, agenda.campos);
         await PL.backend.salvar("secoes", linha);
         await PL.recarregarCatalogo();
       }, "Salvo!");
@@ -1240,11 +1405,23 @@ window.PLAdmin = window.PLAdmin || {};
         var quantos = s.kind === "tips"
           ? PL.catalogo.dicas.filter(function (d) { return d.section_id === s.id; }).length + " dica(s)"
           : PL.catalogo.produtos.filter(function (p) { return p.section_id === s.id; }).length + " produto(s)";
+
+        // A agenda só entra na linha quando existe: escrever "sempre" nas
+        // sete abas normais só faria ruído e esconderia a que é diferente.
+        var marcas = [quantos];
+        if (temAgenda(s)) marcas.push("🕐 " + PL.agendaEmPalavras(s));
+        if (s.replaces_section_id) {
+          var trocada = secoes.find(function (x) { return x.id === s.replaces_section_id; });
+          if (trocada) marcas.push("no lugar de " + trocada.label);
+        }
+        marcas.push("chave: " + s.key);
+        if (!s.active) marcas.push("desligada");
+
         return linhaEdit({
           id: s.id,
           inativo: !s.active,
           nome: `${s.icon ? esc(s.icon) + " " : ""}${esc(s.label)}`,
-          sub: `${quantos} · chave: ${esc(s.key)}${s.active ? "" : " · desligada"}`,
+          sub: esc(marcas.join(" · ")),
           reordena: true,
           chaveSwitch: "ativa",
           rotuloSwitch: "Ligada",
@@ -1339,6 +1516,7 @@ window.PLAdmin = window.PLAdmin || {};
           <span class="trilho"></span>
           <span>Aba ligada (aparece para o quiosque)</span>
         </label>
+        ${blocoAgendaSecao(s)}
         <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
           <div id="nsAvisoChave">
             ${novo
@@ -1350,6 +1528,7 @@ window.PLAdmin = window.PLAdmin || {};
           </div>
         </div>`,
       aoAbrir: function (corpo) {
+        ligarAgendaSecao(corpo, s);
         if (!novo) return;
         // mostra a chave que vai ser criada enquanto a pessoa digita o nome:
         // é mais fácil aceitar uma regra quando dá para ver o resultado
@@ -1364,11 +1543,14 @@ window.PLAdmin = window.PLAdmin || {};
         var rotulo = val(corpo, "nsLabel");
         if (!rotulo) { PL.aviso("Escreva o nome da aba.", "avisa"); return false; }
 
-        var linha = {
+        var agenda = lerAgendaSecao(corpo);
+        if (agenda.problema) { PL.aviso(agenda.problema, "avisa"); return false; }
+
+        var linha = Object.assign({
           label: rotulo,
           icon: val(corpo, "nsIcone"),
           active: marcado(corpo, "nsAtiva"),
-        };
+        }, agenda.campos);
         if (novo) {
           linha.key = chaveDoTexto(rotulo);
           linha.kind = val(corpo, "nsTipo") || "catalog";

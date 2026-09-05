@@ -111,6 +111,23 @@ img{max-width:100%}
 .field-check input{width:20px;height:20px;flex:0 0 auto}
 .field-hint{font-weight:400;font-size:.8rem;color:var(--muted)}
 
+/* Os sete dias da semana da agenda de uma aba (o cardápio noturno).
+   A caixinha de marcar fica escondida e quem responde ao dedo é o rótulo
+   inteiro: no tablet, acertar um quadradinho de 13px é loteria. */
+.dias-semana{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.dia-chip{position:relative;cursor:pointer;user-select:none}
+.dia-chip input{position:absolute;opacity:0;width:0;height:0}
+.dia-chip span{
+  display:flex;align-items:center;justify-content:center;
+  min-width:48px;min-height:44px;padding:0 10px;
+  border:1.5px solid var(--line);border-radius:12px;background:#fff;
+  color:var(--muted);font-weight:700;font-size:.85rem;text-transform:capitalize;
+}
+.dia-chip input:checked + span{
+  background:var(--brand-soft);border-color:var(--brand);color:var(--brand-dark);
+}
+.dia-chip input:focus-visible + span{outline:2px solid var(--brand);outline-offset:2px}
+
 .form-msg{margin:6px 0 0;font-size:.88rem;color:var(--danger);min-height:1.1em}
 .form-msg.ok{color:var(--ok)}
 
@@ -242,6 +259,11 @@ img{max-width:100%}
 .aba:hover{border-color:var(--brand)}
 .aba.is-active{background:var(--brand);border-color:var(--brand);color:#fff}
 .aba .aba-icone{font-size:1.15rem}
+/* Aba fora do horário dela. Só o administrador chega a ver uma — o tablet
+   do quiosque nem desenha. O tracejado diz "isto é cadastro, não é o que
+   o cliente está vendo agora". */
+.aba-fora{border-style:dashed;opacity:.72}
+.aba-fora .aba-relogio{font-size:.9rem;opacity:.8}
 
 /* chips de categoria */
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
@@ -283,7 +305,14 @@ img{max-width:100%}
 }
 .produto-corpo{padding:12px 14px 14px;display:flex;flex-direction:column;gap:5px;flex:1}
 .produto-nome{font-weight:700;font-size:1rem;line-height:1.25}
-.produto-desc{font-size:.84rem;color:var(--muted);line-height:1.35}
+/* A descrição é o que faz o cliente escolher ("serve 2 pessoas", "acompanha
+   limão"). Ela é cortada em 3 linhas para os cartões da grade ficarem da
+   mesma altura — o texto inteiro continua no cadastro. */
+.produto-desc{
+  font-size:.84rem;color:var(--muted);line-height:1.35;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;
+  overflow:hidden;
+}
 .produto-rodape{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:auto;padding-top:8px}
 .produto-preco{font-weight:800;color:var(--brand-dark);font-size:1.05rem}
 .produto-unidade{font-weight:600;font-size:.78rem;color:var(--muted)}
@@ -628,7 +657,10 @@ table.tabela td.num,table.tabela th.num{text-align:right;font-variant-numeric:ta
   .produtos{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
   .produto-corpo{padding:10px}
   .produto-nome{font-size:.92rem}
-  .produto-desc{display:none}
+  /* No celular a descrição continua aparecendo — ela é metade da decisão de
+     quem pede. Só encolhe e cabe em 2 linhas, porque o cartão aqui tem
+     150px de largura e três linhas empurrariam o preço para fora da tela. */
+  .produto-desc{font-size:.78rem;-webkit-line-clamp:2}
   .vs-btn{padding:7px 12px;font-size:.85rem}
   .modal{padding:0;align-items:flex-end}
   .modal-box{max-width:none;border-radius:20px 20px 0 0;max-height:94vh}

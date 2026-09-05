@@ -107,6 +107,58 @@
     }
   }
 
+  // Que DIA da semana é hoje no relógio da casa. 0 = domingo … 6 = sábado,
+  // a mesma numeração que o banco usa (extract(dow)) — de propósito, para
+  // não haver conversão no meio do caminho.
+  //
+  // O meio-dia na conta não é enfeite: pegar a data da casa e devolver ao
+  // Date sem hora daria meia-noite UTC, que em São Paulo ainda é o dia
+  // anterior. Às 21h de terça o cardápio da terça sumiria.
+  function diaDaCasa(fuso) {
+    try {
+      return new Date(hojeNoFuso(fuso) + "T12:00:00").getDay();
+    } catch (e) {
+      return new Date().getDay();
+    }
+  }
+
+  // A agenda de uma aba escrita como alguém falaria: "terças e sextas, das
+  // 18h às 2h". Vive aqui e não em cada tela porque as três a usam — o
+  // tablet, a lista de abas do admin e o formulário de edição — e uma
+  // divergência entre elas confundiria justamente quem está configurando.
+  const DIAS_DA_SEMANA = ["domingos", "segundas", "terças", "quartas", "quintas", "sextas", "sábados"];
+
+  function agendaEmPalavras(secao) {
+    const s = secao || {};
+    const dias = (Array.isArray(s.active_days) ? s.active_days : [])
+      .map(Number)
+      .filter((n) => n >= 0 && n <= 6)
+      .sort((a, b) => a - b);
+
+    const de = horaCurtinha(s.active_from);
+    const ate = horaCurtinha(s.active_to);
+    const faixa = de && ate ? "das " + de + " às " + ate : "";
+
+    let quando = "";
+    if (dias.length && dias.length < 7) {
+      const nomes = dias.map((n) => DIAS_DA_SEMANA[n]);
+      quando = nomes.length === 1
+        ? nomes[0]
+        : nomes.slice(0, -1).join(", ") + " e " + nomes[nomes.length - 1];
+    }
+
+    if (quando && faixa) return quando + ", " + faixa;
+    if (quando) return quando + ", o dia inteiro";
+    if (faixa) return "todo dia, " + faixa;
+    return "sempre";
+  }
+
+  // "18:00:00" → "18h" | "18:30:00" → "18h30"
+  function horaCurtinha(h) {
+    const m = String(h || "").match(/^(\d{1,2}):(\d{2})/);
+    return m ? String(Number(m[1])) + "h" + (m[2] === "00" ? "" : m[2]) : "";
+  }
+
   // ------------------------------------------------------------------
   //  A CONTA ABERTA DE CADA QUIOSQUE  (o "turno")
   //  ------------------------------------------------------------------
@@ -1786,7 +1838,10 @@
 
     // a conta aberta de cada quiosque (o "turno")
     inicioDaSessao, pedidosDaSessao, horaDeEncerrar,
-    minutosDaHora, relogioDaCasa,
+    minutosDaHora, relogioDaCasa, diaDaCasa,
+
+    // a agenda de uma aba (o cardápio noturno)
+    agendaEmPalavras, DIAS_DA_SEMANA,
 
     // links do QR code (ver "OS DOIS TIPOS DE LINK DO QUIOSQUE")
     get quiosqueDoLink() { return quiosqueDoLink; },
