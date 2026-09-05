@@ -186,11 +186,12 @@
   // Nomes que o app usa ⇄ nomes reais das tabelas no banco.
   // Ter um lugar só com essa tradução evita erro de digitação espalhado.
   const TABELAS = {
-    quiosques:  "kiosks",
-    secoes:     "sections",
-    categorias: "categories",
-    produtos:   "products",
-    dicas:      "tips",
+    quiosques:   "kiosks",
+    secoes:      "sections",
+    categorias:  "categories",
+    produtos:    "products",
+    dicas:       "tips",
+    propagandas: "ads",
   };
 
   // ------------------------------------------------------------------
@@ -362,7 +363,8 @@
     // Função ou coluna que o app usa mas que o banco ainda não tem: quase
     // sempre é um arquivo SQL que ficou para trás. Dizer isso em português
     // poupa meia hora de procura.
-    if (/Could not find the (function|table)|PGRST20[25]/i.test(t)) {
+    // "Could not find the function/table/column ... in the schema cache"
+    if (/Could not find the .*(function|table|column)|PGRST20[0-9]/i.test(t)) {
       return "Falta rodar um arquivo SQL no Supabase — este recurso ainda não existe no banco.";
     }
     if (/column .* does not exist|42703/i.test(t)) {
@@ -413,6 +415,55 @@
 
   function vibrar(padrao) {
     try { if (navigator.vibrate) navigator.vibrate(padrao || [120, 60, 120]); } catch (e) {}
+  }
+
+  // ==================================================================
+  //  MANTER A TELA ACESA
+  //  ------------------------------------------------------------------
+  //  O tablet do quiosque fica o dia inteiro no balcão. Se a tela apagar,
+  //  o garçom precisa acordar e destravar o aparelho antes de cada
+  //  pedido — e aí ele volta a gritar o pedido pela lagoa.
+  //
+  //  O navegador só concede isso enquanto a página está À VISTA, e a
+  //  permissão se perde quando o aparelho é minimizado. Por isso a gente
+  //  pede de novo toda vez que a página volta a aparecer.
+  //
+  //  Isto NÃO substitui ajustar o tablet: se o Android estiver com
+  //  bloqueio de tela em 30 s, ele ainda vai bloquear quando o app sair
+  //  da frente. O certo é deixar o aparelho sem bloqueio e na tomada.
+  // ==================================================================
+  let travaDeTela = null;
+
+  async function manterTelaAcesa() {
+    if (!("wakeLock" in navigator)) return false;
+    try {
+      travaDeTela = await navigator.wakeLock.request("screen");
+      travaDeTela.addEventListener("release", () => { travaDeTela = null; });
+      return true;
+    } catch (e) {
+      // negado, bateria fraca, navegador antigo: não é motivo para
+      // atrapalhar nada — o app funciona igual, só apaga a tela
+      console.warn("Manter a tela acesa:", e && e.message);
+      return false;
+    }
+  }
+
+  function soltarTelaAcesa() {
+    try { if (travaDeTela) travaDeTela.release(); } catch (e) {}
+    travaDeTela = null;
+  }
+
+  function quererTelaAcesa() {
+    const c = (ctx && ctx.cliente) || {};
+    if (c.screen_keep_awake === false) return false;
+    if (CFG.manterTelaAcesa === false) return false;
+    // só no tablet do quiosque: no celular do cliente seria abuso de bateria
+    return ehQuiosque() && !ehPublico();
+  }
+
+  function cuidarDaTelaAcesa() {
+    if (!quererTelaAcesa()) { soltarTelaAcesa(); return; }
+    if (document.visibilityState === "visible" && !travaDeTela) manterTelaAcesa();
   }
 
   // ==================================================================
@@ -516,14 +567,17 @@
       async sair() { try { await sb.auth.signOut(); } catch (e) {} },
 
       async carregarCatalogo() {
-        const [secoes, categorias, produtos, dicas, quiosques] = await Promise.all([
+        const [secoes, categorias, produtos, dicas, quiosques, propagandas] = await Promise.all([
           ok(sb.from("sections").select("*").order("sort_order")),
           ok(sb.from("categories").select("*").order("sort_order")),
           ok(sb.from("products").select("*").order("sort_order")),
           ok(sb.from("tips").select("*").order("pinned", { ascending: false }).order("sort_order")),
           ok(sb.from("kiosks").select("*").order("number")),
+          // A tabela de propaganda nasceu no 10. Quem ainda não rodou aquele
+          // arquivo continua com o app inteiro funcionando — só sem anúncio.
+          ok(sb.from("ads").select("*").order("sort_order")).catch(() => []),
         ]);
-        return { secoes, categorias, produtos, dicas, quiosques };
+        return { secoes, categorias, produtos, dicas, quiosques, propagandas };
       },
 
       async carregarPedidos(dia) {
@@ -579,6 +633,38 @@
 
         const { data } = sb.storage.from("cardapio").getPublicUrl(nome);
         return data.publicUrl;
+      },
+
+      // Manda um arquivo de propaganda. Diferente da foto do cardápio,
+      // aqui NÃO dá para encolher no navegador: vídeo o navegador não
+      // recodifica. Vai como veio — daí o aviso de tamanho na tela.
+      //
+      // cacheControl de um ano: o nome é sorteado e nunca se repete, então
+      // guardar por muito tempo é seguro. Isso poupa MUITO tráfego —
+      // dezessete tablets rebaixando vídeo o dia inteiro sairia caro.
+      async subirPropaganda(arquivo) {
+        const ext = (String(arquivo.name || "").match(/\.([a-z0-9]+)$/i) || [, "bin"])[1].toLowerCase();
+        const nome = ctx.cliente.id + "/" +
+          Date.now().toString(36) + Math.random().toString(36).slice(2, 8) + "." + ext;
+
+        const { error } = await sb.storage.from("propaganda").upload(nome, arquivo, {
+          contentType: arquivo.type || "application/octet-stream",
+          cacheControl: "31536000",
+          upsert: false,
+        });
+        if (error) throw error;
+
+        const { data } = sb.storage.from("propaganda").getPublicUrl(nome);
+        return data.publicUrl;
+      },
+
+      async apagarPropaganda(url) {
+        const m = String(url || "").match(/\/storage\/v1\/object\/public\/propaganda\/(.+)$/);
+        if (!m) return false;
+        const { error } = await sb.storage.from("propaganda")
+          .remove([decodeURIComponent(m[1].split("?")[0])]);
+        if (error) { console.warn("Apagar propaganda:", error); return false; }
+        return true;
       },
 
       // Apaga uma foto que este app subiu. Endereço de fora (alguém colou
@@ -770,6 +856,8 @@
       async marcarVistos() { return 0; },
       async fecharSessoes() { throw new Error("Sem permissão."); },
       async subirFoto() { throw new Error("Sem permissão."); },
+      async subirPropaganda() { throw new Error("Sem permissão."); },
+      async apagarPropaganda() { return false; },
       async apagarFoto() { return false; },
       async disponibilidade() { throw new Error("Sem permissão."); },
       async salvar() { throw new Error("Sem permissão."); },
@@ -959,12 +1047,14 @@
         return {
           secoes: b.secoes || SECOES, categorias: b.categorias || CATS,
           produtos: b.produtos || PRODS, dicas: b.dicas || DICAS,
-          quiosques: b.quiosques || QUIOSQUES, pedidos: b.pedidos || [],
+          quiosques: b.quiosques || QUIOSQUES, propagandas: b.propagandas || [],
+          pedidos: b.pedidos || [],
           cliente: b.cliente || CLIENTE, login: b.login || null, contador: b.contador || 0,
         };
       } catch (e) {
         return { secoes: SECOES, categorias: CATS, produtos: PRODS, dicas: DICAS,
-                 quiosques: QUIOSQUES, pedidos: [], cliente: CLIENTE, login: null, contador: 0 };
+                 quiosques: QUIOSQUES, propagandas: [], pedidos: [],
+                 cliente: CLIENTE, login: null, contador: 0 };
       }
     }
     function gravar(b) {
@@ -1020,7 +1110,7 @@
       async carregarCatalogo() {
         const b = ler();
         return { secoes: b.secoes, categorias: b.categorias, produtos: b.produtos,
-                 dicas: b.dicas, quiosques: b.quiosques };
+                 dicas: b.dicas, quiosques: b.quiosques, propagandas: b.propagandas };
       },
 
       // A mesma filtragem que a RLS faz no banco de verdade. Copiar essa
@@ -1123,6 +1213,18 @@
         gravar(b);
         return (ids || []).length;
       },
+
+      // Sem nuvem a propaganda também vira um endereço "data:" aqui mesmo.
+      // Vídeo estoura o armazenamento do navegador num arquivo só, então
+      // na demonstração só imagem entra — e o recado diz isso.
+      async subirPropaganda(arquivo) {
+        if (!/^image\//.test((arquivo && arquivo.type) || "")) {
+          throw new Error("No modo demonstração só dá para usar imagem, não vídeo.");
+        }
+        return this.subirFoto(arquivo);
+      },
+
+      async apagarPropaganda() { return false; },
 
       // Sem nuvem, a foto vira um endereco "data:" guardado aqui mesmo.
       // Encolhemos mais que no modo nuvem porque o armazenamento do
@@ -1561,8 +1663,18 @@
     // mudar no banco.
     setInterval(() => emitir("tique"), 20000);
 
+    // Tablet do quiosque: tela sempre acesa. A permissão se perde quando o
+    // app sai da frente, então pedimos de novo toda vez que ele volta.
+    cuidarDaTelaAcesa();
+    document.addEventListener("visibilitychange", cuidarDaTelaAcesa);
+
     const doHash = (location.hash || "").replace("#/", "");
     irPara(doHash || telaInicial());
+
+    // Avisa que o app está de pé e o perfil já é conhecido. A propaganda
+    // espera por isto: antes do login ela não teria como saber se estamos
+    // num tablet de quiosque ou no celular de um cliente.
+    emitir("pronto", ctx);
   }
 
   function telaInicial() {

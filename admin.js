@@ -1076,6 +1076,7 @@ window.PLAdmin = window.PLAdmin || {};
     { id: "cardapio",  rotulo: "Cardápio",        desenhar: desenharAbasDoQuiosque },
     { id: "pedidos",   rotulo: "Pedidos",         desenhar: desenharAjustesPedidos },
     { id: "quiosques", rotulo: "Quiosques",       desenhar: desenharQuiosques },
+    { id: "propaganda", rotulo: "Propaganda",     desenhar: desenharPropaganda },
     { id: "equipe",    rotulo: "Equipe",          desenhar: desenharEquipe },
     { id: "sobre",     rotulo: "Sobre",           desenhar: desenharSobre },
   ];
@@ -1647,6 +1648,280 @@ window.PLAdmin = window.PLAdmin || {};
       atualizarClienteNaMemoria(campos);
     }, "Trava desligada.");
     desenharCerco(corpo);
+  }
+
+  // ==================================================================
+  //  PROPAGANDA NO TABLET
+  //  ------------------------------------------------------------------
+  //  Vídeo é pesado, e cada tablet baixa o arquivo para tocar. O app
+  //  guarda no aparelho depois da primeira vez, mas mesmo assim vale
+  //  avisar: arquivo grande custa internet e demora a subir.
+  // ==================================================================
+  function desenharPropaganda(corpo) {
+    var caixa = PL.$("#cfg-propaganda", corpo);
+    if (!caixa) return;
+
+    var c = (PL.ctx && PL.ctx.cliente) || {};
+    var anuncios = porOrdem(PL.catalogo.propagandas || []);
+    var segundos = c.ads_idle_seconds === null || c.ads_idle_seconds === undefined
+      ? 120 : Number(c.ads_idle_seconds);
+
+    caixa.innerHTML = `
+      <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
+        <div>
+          O tablet do quiosque mostra isto em tela cheia depois de um tempo parado.
+          Um toque volta para o cardápio, com o carrinho do jeito que estava.
+          <b>Só no tablet do quiosque</b> — a recepção e o celular do cliente nunca veem.
+        </div>
+      </div>
+
+      <div class="field-row">
+        <label class="field">
+          <span>Entra depois de (segundos parado)</span>
+          <input type="number" id="prSegundos" min="0" max="3600" step="10" value="${esc(segundos)}" />
+          <span class="field-hint">120 = 2 minutos. <b>0 desliga</b> a propaganda.</span>
+        </label>
+        <label class="field">
+          <span>Tela do tablet</span>
+          <label class="switch" style="margin-top:10px">
+            <input type="checkbox" id="prAcesa" ${c.screen_keep_awake === false ? "" : "checked"} />
+            <span class="trilho"></span>
+            <span>Nunca apagar</span>
+          </label>
+          <span class="field-hint">
+            Também deixe o tablet <b>sem bloqueio de tela</b> e na tomada.
+          </span>
+        </label>
+      </div>
+      <label class="switch" style="margin:4px 0 10px">
+        <input type="checkbox" id="prLigada" ${c.ads_enabled === false ? "" : "checked"} />
+        <span class="trilho"></span>
+        <span>Mostrar propaganda</span>
+      </label>
+      <button type="button" class="btn btn-primary" data-acao="salvarProp" style="min-height:48px">
+        Salvar ajustes
+      </button>
+
+      <div class="card-head" style="margin-top:22px">
+        <span class="hint">${anuncios.length} anúncio(s). Tocam em laço, nesta ordem.</span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${anuncios.length ? `<button type="button" class="btn btn-sm btn-outline" data-acao="verProp"
+             style="min-height:44px">▶ Ver como fica</button>` : ""}
+          <input type="file" id="prArquivo" accept="image/*,video/*" hidden />
+          <button type="button" class="btn btn-sm btn-primary" data-acao="novaProp" style="min-height:44px">
+            + Novo anúncio
+          </button>
+        </div>
+      </div>
+      <p class="form-msg" id="prMsg" role="status"></p>
+
+      ${anuncios.length ? `<div class="lista-edit">${anuncios.map(function (a) {
+        var previa = a.kind === "video"
+          ? '<video src="' + esc(a.url) + '" muted playsinline preload="metadata"></video>'
+          : '<img src="' + esc(a.url) + '" alt="" />';
+        return `
+          <div class="le${a.active ? "" : " inativo"}" data-id="${esc(a.id)}">
+            <div class="prop-previa">${previa}</div>
+            <div class="le-info">
+              <div class="le-nome">${esc(a.title || "(sem nome)")}</div>
+              <div class="le-sub">
+                <span class="prop-tipo">${a.kind === "video" ? "vídeo" : "imagem"}</span>
+                ${a.kind === "video" ? "toca até o fim" : esc(a.seconds) + " segundos na tela"}
+                ${a.active ? "" : " · desligado"}
+              </div>
+            </div>
+            <div class="le-acoes">
+              ${botaoAcao("subir", "↑", "btn-neutral", "Subir na ordem")}
+              ${botaoAcao("descer", "↓", "btn-neutral", "Descer na ordem")}
+              <label class="switch" title="Desligado, some do laço sem apagar o arquivo">
+                <input type="checkbox" data-acao="ligaProp"${a.active ? " checked" : ""} />
+                <span class="trilho"></span><span>No ar</span>
+              </label>
+              ${botaoAcao("editarProp", "Editar", "btn-outline")}
+              ${botaoAcao("excluirProp", "Excluir", "btn-danger")}
+            </div>
+          </div>`;
+      }).join("")}</div>` : `
+        <div class="vazio">
+          <b>Nenhum anúncio ainda</b>
+          Suba uma imagem ou um vídeo curto. Sem anúncio, o tablet nunca mostra
+          o descanso de tela — ele fica no cardápio.
+        </div>`}
+
+      <div class="aviso aviso-warn" style="font-weight:400;font-size:.86rem;margin-top:14px">
+        <div>
+          <b>Sobre vídeo:</b> ele sobe do jeito que está — o navegador não sabe
+          encolher vídeo como faz com foto. Cada tablet baixa o arquivo uma vez e
+          guarda, mas arquivo grande demora a subir e gasta internet.
+          Prefira <b>poucos, curtos e leves</b>; imagem é bem mais barata e
+          funciona igual. O vídeo toca <b>sem som</b>: navegador nenhum deixa
+          começar sozinho com áudio.
+        </div>
+      </div>`;
+
+    ligarAcoes(caixa, async function (acao, id, alvo) {
+      var a = anuncios.find(function (x) { return x.id === id; });
+
+      if (acao === "salvarProp")  { salvarAjustesProp(corpo, caixa); return; }
+      if (acao === "verProp")     { verComoFica(); return; }
+      if (acao === "novaProp")    { PL.$("#prArquivo", caixa).click(); return; }
+      if (acao === "editarProp" && a) { formularioProp(a, function () { redesenhaProp(corpo); }); return; }
+
+      if (acao === "ligaProp" && a) {
+        var querido = alvo.checked;
+        var ok = await tentar(function () {
+          return PL.backend.salvar("propagandas", { id: a.id, active: querido });
+        }, "Salvo!");
+        if (!ok) alvo.checked = !querido;
+        await redesenhaProp(corpo);
+        return;
+      }
+
+      if (acao === "subir" || acao === "descer") {
+        var ids = idsTrocando(anuncios, id, acao === "subir" ? -1 : 1);
+        if (!ids) return;
+        await tentar(function () { return PL.backend.reordenar("propagandas", ids); });
+        await redesenhaProp(corpo);
+        return;
+      }
+
+      if (acao === "excluirProp" && a) {
+        var certeza = await PL.confirmar({
+          titulo: "Excluir este anúncio",
+          texto: "O arquivo sai do armazenamento e o anúncio some do laço.<br><br>" +
+                 "Se for só para tirar do ar por uns dias, use o botão <b>No ar</b> — " +
+                 "assim você não precisa subir de novo depois.",
+          ok: "Excluir", perigo: true,
+        });
+        if (!certeza) return;
+        await tentar(async function () {
+          await PL.backend.remover("propagandas", a.id);
+          try { await PL.backend.apagarPropaganda(a.url); }
+          catch (e) { console.warn("Arquivo ficou no armazenamento:", e); }
+        }, "Anúncio excluído.");
+        await redesenhaProp(corpo);
+      }
+    });
+
+    // ---- subir arquivo novo ----
+    var arquivo = PL.$("#prArquivo", caixa);
+    var msg = PL.$("#prMsg", caixa);
+    arquivo.onchange = async function () {
+      var f = arquivo.files && arquivo.files[0];
+      if (!f) return;
+
+      var mb = f.size / 1048576;
+      if (mb > 50) {
+        msg.textContent = "Arquivo de " + mb.toFixed(1) + " MB. O limite é 50 MB — " +
+          "exporte o vídeo menor ou use uma imagem.";
+        arquivo.value = "";
+        return;
+      }
+      // 10 MB não é erro, mas merece um aviso: são 17 tablets baixando
+      if (mb > 10) {
+        var seguir = await PL.confirmar({
+          titulo: "Arquivo grande",
+          texto: "São <b>" + mb.toFixed(1) + " MB</b>. Cada tablet vai baixar isso uma vez " +
+                 "(depois fica guardado no aparelho), mas com 17 quiosques o consumo de " +
+                 "internet soma.<br><br>Quer continuar?",
+          ok: "Subir mesmo assim", cancelar: "Escolher outro",
+        });
+        if (!seguir) { arquivo.value = ""; return; }
+      }
+
+      msg.className = "form-msg";
+      msg.textContent = "Enviando… " + mb.toFixed(1) + " MB. Não feche esta janela.";
+      try {
+        var url = await PL.backend.subirPropaganda(f);
+        await PL.backend.salvar("propagandas", {
+          kind: /^video\//.test(f.type) ? "video" : "image",
+          url: url,
+          title: String(f.name || "").replace(/\.[a-z0-9]+$/i, "").slice(0, 60),
+          seconds: 8,
+          active: true,
+          sort_order: proximaOrdem(PL.catalogo.propagandas || []),
+        });
+        msg.className = "form-msg ok";
+        msg.textContent = "Anúncio no ar.";
+        await redesenhaProp(corpo);
+      } catch (e) {
+        console.error("Subir propaganda:", e);
+        msg.className = "form-msg";
+        msg.textContent = PL.erroLegivel(e);
+      } finally {
+        arquivo.value = "";
+      }
+    };
+  }
+
+  async function redesenhaProp(corpo) {
+    await PL.recarregarCatalogo();
+    desenharPropaganda(corpo);
+  }
+
+  async function salvarAjustesProp(corpo, caixa) {
+    var seg = Number(val(caixa, "prSegundos"));
+    if (!isFinite(seg) || seg < 0 || seg > 3600) {
+      PL.aviso("O tempo precisa ficar entre 0 e 3600 segundos.", "avisa");
+      return;
+    }
+    var campos = {
+      ads_idle_seconds: Math.round(seg),
+      ads_enabled: marcado(caixa, "prLigada"),
+      screen_keep_awake: marcado(caixa, "prAcesa"),
+    };
+    await tentar(async function () {
+      await PL.backend.salvarCliente(campos);
+      atualizarClienteNaMemoria(campos);
+    }, "Salvo!");
+    if (window.PLPropaganda) window.PLPropaganda.armar();
+  }
+
+  // Mostrar como fica sem esperar os dois minutos. Só faz sentido no
+  // tablet do quiosque — no aparelho do admin a propaganda não entra
+  // sozinha, então este botão é a única forma de conferir.
+  function verComoFica() {
+    if (!window.PLPropaganda) {
+      PL.aviso("A propaganda ainda não carregou.", "erro");
+      return;
+    }
+    PL.aviso("Toque na tela para voltar.", "avisa");
+    setTimeout(function () { window.PLPropaganda.testar(); }, 400);
+  }
+
+  function formularioProp(a, aoTerminar) {
+    abrirFormulario({
+      titulo: "Editar anúncio",
+      corpo: `
+        <div class="prop-previa" style="width:100%;height:180px;margin-bottom:12px">
+          ${a.kind === "video"
+            ? '<video src="' + esc(a.url) + '" muted playsinline controls></video>'
+            : '<img src="' + esc(a.url) + '" alt="" />'}
+        </div>
+        <label class="field">
+          <span>Nome (só para você se achar na lista)</span>
+          <input type="text" id="apTitulo" value="${esc(a.title || "")}" placeholder="Promoção de isca" />
+        </label>
+        ${a.kind === "video" ? `
+          <div class="aviso aviso-info" style="font-weight:400;font-size:.86rem">
+            <div>Vídeo toca até o fim e passa para o próximo. Sempre sem som.</div>
+          </div>` : `
+          <label class="field">
+            <span>Quanto tempo na tela (segundos)</span>
+            <input type="number" id="apSegundos" min="2" max="120" step="1" value="${esc(a.seconds || 8)}" />
+          </label>`}`,
+      aoSalvar: async function (corpo) {
+        var linha = { id: a.id, title: val(corpo, "apTitulo") || null };
+        if (a.kind !== "video") {
+          var s = Number(val(corpo, "apSegundos")) || 8;
+          if (s < 2 || s > 120) { PL.aviso("O tempo precisa ficar entre 2 e 120 segundos.", "avisa"); return false; }
+          linha.seconds = Math.round(s);
+        }
+        await PL.backend.salvar("propagandas", linha);
+        await PL.recarregarCatalogo();
+        if (aoTerminar) aoTerminar();
+      },
+    });
   }
 
   // ==================================================================

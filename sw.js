@@ -21,18 +21,24 @@
      tablets podem continuar com a versão antiga por dias.
    ============================================================ */
 
-const CACHE = "pedidos-lagoa-v7";
+const CACHE = "pedidos-lagoa-v8";
+
+// As fotos e os vídeos ficam num cache SEPARADO, que NÃO é apagado a cada
+// versão nova do app. Se fossem juntos, publicar uma correção de texto
+// faria os 17 tablets baixarem os vídeos de novo.
+const CACHE_MIDIA = "pedidos-lagoa-midia";
 
 const SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=7",
-  "./config.js?v=7",
-  "./qr.js?v=7",
-  "./app.js?v=7",
-  "./quiosque.js?v=7",
-  "./recepcao.js?v=7",
-  "./admin.js?v=7",
+  "./styles.css?v=8",
+  "./config.js?v=8",
+  "./qr.js?v=8",
+  "./app.js?v=8",
+  "./quiosque.js?v=8",
+  "./propaganda.js?v=8",
+  "./recepcao.js?v=8",
+  "./admin.js?v=8",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
@@ -52,7 +58,9 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys()
-      .then((chaves) => Promise.all(chaves.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((chaves) => Promise.all(
+        chaves.filter((k) => k !== CACHE && k !== CACHE_MIDIA).map((k) => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });
@@ -63,6 +71,26 @@ self.addEventListener("fetch", (e) => {
 
   let url;
   try { url = new URL(req.url); } catch (err) { return; }
+
+  // As FOTOS e a PROPAGANDA são a exceção: guardamos para sempre.
+  // Não é enfeite de velocidade — é dinheiro. Dezessete tablets rebaixando
+  // um vídeo a cada laço estouraria a franquia de internet do Supabase em
+  // dias. O nome do arquivo é sorteado e nunca se repete, então uma cópia
+  // guardada nunca fica "velha": anúncio novo é arquivo novo.
+  if (/\/storage\/v1\/object\/public\/(propaganda|cardapio)\//.test(url.pathname)) {
+    e.respondWith(
+      caches.open(CACHE_MIDIA).then((c) =>
+        c.match(req).then((achou) => {
+          if (achou) return achou;
+          return fetch(req).then((res) => {
+            if (res && res.status === 200) c.put(req, res.clone());
+            return res;
+          });
+        })
+      )
+    );
+    return;
+  }
 
   // Supabase e qualquer outro servidor: passa direto, sem cache.
   // É dado ao vivo — uma cópia velha aqui viraria pedido fantasma.
