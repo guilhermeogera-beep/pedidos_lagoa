@@ -21,7 +21,7 @@
      tablets podem continuar com a versão antiga por dias.
    ============================================================ */
 
-const CACHE = "pedidos-lagoa-v9";
+const CACHE = "pedidos-lagoa-v10";
 
 // As fotos e os vídeos ficam num cache SEPARADO, que NÃO é apagado a cada
 // versão nova do app. Se fossem juntos, publicar uma correção de texto
@@ -31,14 +31,14 @@ const CACHE_MIDIA = "pedidos-lagoa-midia";
 const SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=9",
-  "./config.js?v=9",
-  "./qr.js?v=9",
-  "./app.js?v=9",
-  "./quiosque.js?v=9",
-  "./propaganda.js?v=9",
-  "./recepcao.js?v=9",
-  "./admin.js?v=9",
+  "./styles.css?v=10",
+  "./config.js?v=10",
+  "./qr.js?v=10",
+  "./app.js?v=10",
+  "./quiosque.js?v=10",
+  "./propaganda.js?v=10",
+  "./recepcao.js?v=10",
+  "./admin.js?v=10",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

@@ -61,6 +61,7 @@
   var lugarPedido = "";
   var enviando = false;         // trava contra o toque duplo no tablet
   var cancelandoPedido = null;  // id do pedido cujo pop-up de cancelar está aberto
+  var popCarrinho = null;       // o pop-up de conferência, quando está aberto
 
   // Como PL.ao() não tem "desligar", cada tela guarda um interruptor e todo
   // ouvinte confere se ela ainda está no ar antes de mexer em qualquer coisa.
@@ -363,6 +364,10 @@
 
   function gravarCarrinho() {
     try { localStorage.setItem(CHAVE_CARRINHO, JSON.stringify(carrinho)); } catch (e) { /* tablet com armazenamento cheio: o pedido continua na memória */ }
+    // Toda mudança do carrinho passa por aqui, então é o lugar certo para
+    // reacertar o relógio da limpeza automática: um item a mais é sinal de
+    // que tem gente ali, e um carrinho vazio não tem o que apagar.
+    armarLimpezaDoCarrinho();
   }
 
   // Produto apagado, desligado ou esgotado depois que entrou no carrinho: sai
@@ -448,6 +453,63 @@
   }
 
   // ==================================================================
+  //  O CARRINHO QUE SE APAGA SOZINHO
+  //  ------------------------------------------------------------------
+  //  O tablet do quiosque é de todo mundo. Quem escolhe três itens e vai
+  //  embora sem enviar deixa o pedido dele esperando na tela — e o
+  //  pescador seguinte, que nem reparou, manda tudo no nome dele. Pior:
+  //  a recepção recebe um pedido que ninguém fez.
+  //
+  //  Passados alguns minutos sem NINGUÉM ENCOSTAR, o carrinho se apaga.
+  //  O relógio é o mesmo tipo do descanso de tela: qualquer toque zera.
+  //
+  //  POR QUE SÓ NO TABLET
+  //  No celular do próprio cliente ninguém herda carrinho de ninguém, e
+  //  apagar a escolha de quem parou para pensar (ou foi atender uma
+  //  ligação) seria só um estorvo.
+  // ==================================================================
+  var MINUTOS_LIMPAR_PADRAO = 3;
+  var relogioCarrinho = null;
+
+  function minutosParaLimpar() {
+    var ajustes = (PL.ctx && PL.ctx.cliente && PL.ctx.cliente.settings) || {};
+    var v = ajustes.carrinho_limpa_min;
+    // 0 é um valor válido e quer dizer "nunca apaga" — por isso a conferência
+    // é por vazio/ausente, e não por "se for falso"
+    if (v === null || v === undefined || v === "") v = PL.CFG.carrinhoLimpaMinutos;
+    if (v === null || v === undefined || v === "") v = MINUTOS_LIMPAR_PADRAO;
+    v = Number(v);
+    return isFinite(v) && v >= 0 ? v : MINUTOS_LIMPAR_PADRAO;
+  }
+
+  function podeLimparSozinho() {
+    if (!PL.ehQuiosque() || PL.ehPublico()) return false;
+    return minutosParaLimpar() > 0;
+  }
+
+  function armarLimpezaDoCarrinho() {
+    clearTimeout(relogioCarrinho);
+    if (!carrinho.length || !podeLimparSozinho()) return;
+
+    relogioCarrinho = setTimeout(function () {
+      // O pedido já está a caminho do banco: mexer no carrinho agora
+      // deixaria a tela dizendo uma coisa e o banco outra.
+      if (enviando) { armarLimpezaDoCarrinho(); return; }
+      if (!carrinho.length || !podeLimparSozinho()) return;
+
+      var minutos = minutosParaLimpar();
+      esvaziarCarrinho();
+      // o pop-up de conferência pode ter ficado aberto: sem fechar, ele
+      // continuaria listando itens que não existem mais
+      if (popCarrinho) { try { popCarrinho.fechar(); } catch (e) { /* já fechado */ } }
+      atualizarTodosCartoes();
+      desenharBarraCarrinho();
+      PL.aviso("O pedido foi apagado por ficar " + minutos +
+               (minutos === 1 ? " minuto" : " minutos") + " sem ninguém mexer.", "avisa");
+    }, minutosParaLimpar() * 60000);
+  }
+
+  // ==================================================================
   //  POR QUAL QUIOSQUE O PEDIDO VAI
   // ==================================================================
   function quiosqueDoPedido() {
@@ -496,6 +558,9 @@
     // O catálogo — e a hora — podem ter mudado enquanto a tela estava fechada.
     limparCarrinhoFantasma();
     assinaturaRelogio = assinaturaDoRelogio();
+    // O tablet pode ter recarregado sozinho com o carrinho de alguém dentro:
+    // o relógio começa a contar de novo agora, e não de onde parou.
+    armarLimpezaDoCarrinho();
 
     desenharTopo();
     desenharAbas();
@@ -890,10 +955,15 @@
       ],
       // Ao fechar, a tela de trás precisa refletir o que mudou aqui dentro.
       aoFechar: function () {
+        popCarrinho = null;
         atualizarTodosCartoes();
         desenharBarraCarrinho();
       },
     });
+
+    // guardado para a limpeza automática poder fechar este pop-up: sem
+    // isso ele continuaria listando itens que já foram apagados
+    popCarrinho = pop;
 
     // ---- itens (redesenhados a cada + / −) ----
     function redesenharLista() {
@@ -906,6 +976,10 @@
         return '<div class="ci" style="flex-wrap:wrap">' +
           '<div class="ci-info">' +
             '<span class="ci-nome">' + PL.esc(p.name) + "</span>" +
+            // A descrição é o que distingue dois itens de nome parecido
+            // ("porção" e "porção grande"). Na hora de conferir o pedido é
+            // justamente quando a pessoa quer ter certeza do que escolheu.
+            (p.description ? '<span class="ci-desc">' + PL.esc(p.description) + "</span>" : "") +
             (mostraPreco()
               ? '<span class="ci-preco">' + PL.dinheiro(p.price_cents) + " · " + PL.esc(p.unit || "un") + "</span>"
               : '<span class="ci-preco">' + PL.esc(p.unit || "un") + "</span>") +
@@ -1418,6 +1492,13 @@
   //  cada troca de aba empilharia mais um ouvinte igual — e PL.ao() não
   //  tem como desligar nenhum deles.
   // ==================================================================
+  // Qualquer sinal de vida adia a limpeza do carrinho. Vai no documento
+  // inteiro e na fase de CAPTURA para valer também dentro de um pop-up e
+  // por baixo da propaganda, que come o toque antes de ele chegar à tela.
+  ["pointerdown", "keydown", "wheel", "touchstart"].forEach(function (ev) {
+    document.addEventListener(ev, armarLimpezaDoCarrinho, { capture: true, passive: true });
+  });
+
   PL.ao("catalogo", function () {
     if (!telaCardapioAtiva) return;
     limparCarrinhoFantasma();

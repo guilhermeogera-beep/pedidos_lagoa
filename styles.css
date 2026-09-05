@@ -389,6 +389,10 @@ img{max-width:100%}
 }
 .ci-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .ci-nome{font-weight:700}
+/* A descrição do item na hora de conferir o pedido. Sem corte de linhas
+   aqui de propósito: na grade ela é resumo, mas nesta tela é a última
+   chance de a pessoa ver que pediu a porção errada. */
+.ci-desc{font-size:.82rem;color:var(--muted);line-height:1.35}
 .ci-preco{font-size:.85rem;color:var(--muted)}
 .ci-obs{
   border:1px dashed var(--line);border-radius:10px;padding:6px 10px;

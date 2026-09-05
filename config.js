@@ -85,14 +85,18 @@ window.PEDIDOS_CONFIG = {
 
   // ------------------------------------------------------------------
   //  TABLET DO QUIOSQUE
-  //  Estes dois valem só para o tablet logado como quiosque — nunca na
+  //  Estes valem só para o tablet logado como quiosque — nunca na
   //  recepção (que precisa ver o pedido chegar) nem no celular do cliente
-  //  que veio pelo QR (é a bateria dele).
+  //  que veio pelo QR (é a bateria dele, e o carrinho dele).
   //  O admin também pode mudar pela engrenagem, e aí vale o da nuvem.
   // ------------------------------------------------------------------
   manterTelaAcesa: true,        // impede o tablet de apagar a tela sozinho
   propagandaLigada: true,       // mostra propaganda depois de um tempo parado
   propagandaAposSegundos: 120,  // 2 minutos sem ninguém tocar (0 = nunca)
+
+  // O tablet é de todo mundo: quem escolhe itens e vai embora sem enviar
+  // deixaria o pedido esperando para o próximo pescador mandar sem querer.
+  carrinhoLimpaMinutos: 3,      // apaga o carrinho parado (0 = nunca apaga)
 
   // Motivos prontos do botão "Pediu errado" (a recepção também pode
   // escrever um motivo na hora).

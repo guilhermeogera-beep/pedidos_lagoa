@@ -147,7 +147,6 @@ window.PLAdmin = window.PLAdmin || {};
     if (PL.ctx && PL.ctx.cliente) Object.assign(PL.ctx.cliente, campos);
   }
 
-  // Atalhos para ler o que foi digitado num formulário do pop-up.
   // ------------------------------------------------------------------
   //  A AGENDA DA ABA  (é assim que nasce o cardápio noturno)
   //  ------------------------------------------------------------------
@@ -308,6 +307,7 @@ window.PLAdmin = window.PLAdmin || {};
     };
   }
 
+  // Atalhos para ler o que foi digitado num formulário do pop-up.
   function val(corpo, id) {
     var el = PL.$("#" + id, corpo);
     return el ? String(el.value || "").trim() : "";
@@ -1205,6 +1205,27 @@ window.PLAdmin = window.PLAdmin || {};
             as pessoas param de olhar para a cor.
           </div>
         </div>
+
+        <h3 class="card-title" style="margin-top:6px">O carrinho parado no tablet</h3>
+        <p class="hint" style="margin:0;line-height:1.6">
+          O tablet do quiosque é de todo mundo. Quem escolhe itens e vai embora sem enviar
+          deixa o pedido esperando na tela — e o pescador seguinte manda tudo no nome dele
+          sem perceber. Passado este tempo <b>sem ninguém encostar</b>, o carrinho se apaga.
+        </p>
+        <label class="field" style="max-width:260px">
+          <span>Minutos parado até apagar</span>
+          <input type="number" id="carrinhoMin" min="0" max="120" step="1"
+                 value="${esc(minutosDoCarrinho(c))}" />
+          <span class="field-hint"><b>0</b> = nunca apaga sozinho.</span>
+        </label>
+        <div class="aviso aviso-info" style="font-weight:400;font-size:.88rem">
+          <div>
+            Vale só no <b>tablet do quiosque</b>. No celular do próprio cliente, que veio
+            pelo QR, o carrinho nunca é apagado: ninguém herda o carrinho de ninguém ali,
+            e apagar a escolha de quem parou para pensar só atrapalharia.
+          </div>
+        </div>
+
         <button type="button" class="btn btn-primary" id="slaSalvar" style="min-height:48px">Salvar</button>`;
 
     PL.$("#slaSalvar", caixa).onclick = async function () {
@@ -1214,14 +1235,42 @@ window.PLAdmin = window.PLAdmin || {};
       if (atencao < 1 || atraso < 1) { PL.aviso("Os dois números precisam ser pelo menos 1 minuto.", "avisa"); return; }
       if (atraso <= atencao) { PL.aviso("O “atrasado” precisa ser maior que o “atenção”.", "avisa"); return; }
 
+      // Vazio não é o mesmo que zero: zero quer dizer "nunca apaga", e vazio
+      // quer dizer "não mexi nisso" — que deve manter o que já valia.
+      var bruto = val(caixa, "carrinhoMin");
+      var minutos = bruto === "" ? minutosDoCarrinho(c) : Number(bruto);
+      if (!isFinite(minutos) || minutos < 0 || minutos > 120) {
+        PL.aviso("Os minutos do carrinho precisam ser um número de 0 a 120.", "avisa");
+        return;
+      }
+
       botao.disabled = true;
       await tentar(async function () {
-        var campos = { sla_warn_minutes: atencao, sla_late_minutes: atraso };
+        // settings é um jsonb: o update troca o objeto inteiro, então ele
+        // precisa sair daqui já com tudo o que havia dentro dele
+        var ajustes = Object.assign({}, c.settings || {}, { carrinho_limpa_min: minutos });
+        var campos = {
+          sla_warn_minutes: atencao,
+          sla_late_minutes: atraso,
+          settings: ajustes,
+        };
         await PL.backend.salvarCliente(campos);
         atualizarClienteNaMemoria(campos);
       }, "Salvo!");
       botao.disabled = false;
     };
+  }
+
+  // Quantos minutos parado até o carrinho do tablet se apagar. A mesma
+  // ordem que o quiosque.js usa: o que está na nuvem manda; sem nada lá,
+  // vale o config.js; sem nada nele, três minutos.
+  function minutosDoCarrinho(cliente) {
+    var ajustes = (cliente && cliente.settings) || {};
+    var v = ajustes.carrinho_limpa_min;
+    if (v === null || v === undefined || v === "") v = PL.CFG.carrinhoLimpaMinutos;
+    if (v === null || v === undefined || v === "") v = 3;
+    v = Number(v);
+    return isFinite(v) && v >= 0 ? v : 3;
   }
 
   // ==================================================================
